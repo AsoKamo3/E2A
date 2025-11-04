@@ -1,26 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-eight_to_atena.py  v1.1.1  (hotfix: SyntaxError 修正)
+eight_to_atena.py  v1.2.0
 
-Eight の書き出しCSVを「宛名職人」CSVに変換するワンファイルツール。
-- 文字コード: UTF-8
-- 区切り: カンマ
-- 住所1/住所2 は全角統一
-- 郵便番号は xxx-xxxx に整形（半角）
-- 会社電話は複数候補を ; で結合（スペースなし）
-- 部署名はルールに基づき部署名1/部署名2へ分割（全角、＋の前後は全角スペース）
-- カスタム列(固定列以降)は「1」の列ヘッダを上から順に メモ1..5、その超過分は 備考1（改行区切り）へ
-- “ふりがな”は簡易推定（カタカナ化）*漢字のみ等で推定困難な場合は空欄のまま可
-- 会社名かなは法人種別語（株式会社等）は除外して付与
+変更点:
+- convert_eight_csv_to_atena_csv(input_csv_path, output_csv_path=None)
+  - output_csv_path 省略時は出力CSV文字列を return（ファイルは書かない）
+  - output_csv_path 指定時はファイルに書き出し、出力パスを return
+- それ以外のロジックは前回同等（住所分割 v16 / 全角統一 / 部署分割 等）
 """
 
 import csv
 import re
 import sys
+import io
 import argparse
 from pathlib import Path
+from typing import Optional, List, Tuple
 
-VERSION = "v1.1.1"
+VERSION = "v1.2.0"
 
 # ---- Eight 側の固定ヘッダ（ここまでが固定列） ----
 EIGHT_FIXED_HEADER = [
@@ -109,7 +106,7 @@ def normalize_phone(raw: str) -> str:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
     return raw
 
-def join_phones(parts):
+def join_phones(parts: List[str]) -> str:
     nums = [normalize_phone(p) for p in parts if p and str(p).strip()]
     nums = [n for n in nums if n]
     return ";".join(nums)
@@ -121,7 +118,7 @@ def normalize_dept_text(s: str) -> str:
     s = re.sub(r"[ \u3000]+", "　", s.strip())
     return s
 
-def split_department(dept: str) -> tuple[str, str]:
+def split_department(dept: str) -> Tuple[str, str]:
     if not dept or not str(dept).strip():
         return ("","")
     s = normalize_dept_text(dept)
@@ -142,18 +139,29 @@ def split_department(dept: str) -> tuple[str, str]:
         return (f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}", f"{parts[3]}　＋　{parts[4]}")
     return (f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}", f"{parts[3]}　＋　{parts[4]}　＋　{parts[5]}")
 
+# 建物語の代表語（前半が落ちないよう “～ビル/～タワー/～スクエア …” を検出）
 BUILDING_TOKENS = (
-    r"ビル|タワー|タワーズ|シティ|ヒルズ|スクエア|ガーデン|プレイス|"
+    r"ビル|ビルディング|タワー|タワーズ|シティ|ヒルズ|スクエア|ガーデン|プレイス|"
     r"コート|テラス|センター|プラザ|レジデンス|マンション|ハイツ|"
     r"コーポ|メゾン|パーク|パレス|キャッスル|ステーション|モール|"
     r"パルコ|オフィス|ウォール|カレッジ|ドーム|ハウス|スタジアム"
 )
 
-def split_address(addr: str) -> tuple[str, str]:
+def split_address(addr: str) -> Tuple[str, str]:
+    """
+    住所 → (住所1, 住所2) に分割
+    ルール要点:
+      - 英語のみは住所2に全塊 / 住所1は空
+      - 末尾の 〜階/F/室/号室/内 が現れたら、直前の番地塊までを住所1
+      - 「建物語」が現れたら、その直前の番地塊までを住所1（語頭落ち防止）
+      - 4連番 (a-b-c-d) は a-b-c / d に分割
+      - 町丁目番地号は「〜丁目〜番〜号」までを住所1
+    """
     if addr is None:
         return ("", "")
     a = addr.strip()
 
+    # 英語だけ
     if re.fullmatch(r"[A-Za-z0-9\s,.\-/#()]+", a):
         return ("", a)
 
@@ -173,16 +181,19 @@ def split_address(addr: str) -> tuple[str, str]:
                 return m[-1]
         return None
 
+    # a-b-c-d → a-b-c / d
     m = re.search(rf"^(.*?)(\d+{H}\d+{H}\d+){H}(\d+)(.*)$", a)
     if m:
         head = (m.group(1) or "") + (m.group(2) or "")
         tail = (m.group(3) or "") + (m.group(4) or "")
         return (head, tail)
 
+    # 〜丁目〜番〜号 で切る
     m = re.search(rf"^(.*?\d+丁目\d+番\d+号)(.+)$", a)
     if m:
         return (m.group(1), m.group(2))
 
+    # 建物語が続く場合（語頭ごと住所2に送る）
     mlast = _last_address_block(a)
     if mlast and mlast.end() < len(a):
         tail = a[mlast.end():]
@@ -190,6 +201,7 @@ def split_address(addr: str) -> tuple[str, str]:
             if re.search(BUILDING_TOKENS, tail, flags=re.IGNORECASE):
                 return (a[:mlast.end()], tail)
 
+    # 階/F/室/号室/内 の直前の番地までを住所1
     for tok in ["階", "F", "Ｆ", "室", "号室", "内"]:
         t = re.search(re.escape(tok), a)
         if t:
@@ -201,12 +213,13 @@ def split_address(addr: str) -> tuple[str, str]:
 
     return (a, "")
 
-def finalize_address(addr_raw: str) -> tuple[str, str]:
+def finalize_address(addr_raw: str) -> Tuple[str, str]:
     if not addr_raw or not str(addr_raw).strip():
         return ("","")
     a1, a2 = split_address(str(addr_raw))
     a1 = to_zenkaku(a1)
     a2 = to_zenkaku(a2)
+    # 「〜内」系は住所2へ寄せる
     SPECIAL = ["ＮＨＫ内","大学構内","センター内","工場内","構内","院内","校内"]
     for sp in SPECIAL:
         if sp in a1:
@@ -228,7 +241,7 @@ def guess_company_kana(company: str) -> str:
     base = strip_corp_words(company or "")
     return guess_kana(base)
 
-def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
+def convert_row(eight_row: dict, custom_headers: List[str]) -> List[str]:
     last = (eight_row.get("姓") or "").strip()
     first = (eight_row.get("名") or "").strip()
     email = (eight_row.get("e-mail") or "").strip()
@@ -254,8 +267,9 @@ def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
     seimei_kana = f"{sei_kana}{mei_kana}" if (sei_kana or mei_kana) else ""
     company_kana = guess_company_kana(company)
 
-    memo_list = []
-    biko_list = []
+    # カスタム列: "1" のヘッダ名をメモへ
+    memo_list: List[str] = []
+    biko_list: List[str] = []
     for h in custom_headers:
         val = eight_row.get(h, "")
         if str(val).strip() == "1":
@@ -300,28 +314,50 @@ def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
         biko1, biko2, biko3,
         "", "", "", "", ""
     ]
-    return out  # ← ここが欠けていると配列未閉鎖っぽく見えることがあります
+    return out
 
-def convert_eight_csv_to_atena_csv(input_csv_path: str, output_csv_path: str) -> None:
+def _convert_stream(reader: csv.DictReader) -> List[List[str]]:
+    all_headers = reader.fieldnames or []
+    if not all_headers:
+        raise ValueError("入力CSVのヘッダが読み取れません。")
+    custom_headers = [h for h in all_headers if h not in EIGHT_FIXED_HEADER]
+
+    rows_out: List[List[str]] = [ATENA_HEADER[:]]
+    for row in reader:
+        rows_out.append(convert_row(row, custom_headers))
+    return rows_out
+
+def convert_eight_csv_to_atena_csv(input_csv_path: str, output_csv_path: Optional[str] = None):
+    """
+    output_csv_path を省略すると、生成した CSV テキスト（UTF-8）を return。
+    指定した場合はファイルに書き出し、出力パスを return。
+    """
     in_path = Path(input_csv_path)
-    out_path = Path(output_csv_path)
-
-    with in_path.open("r", encoding="utf-8", newline="") as f_in, \
-         out_path.open("w", encoding="utf-8", newline="") as f_out:
-
+    with in_path.open("r", encoding="utf-8", newline="") as f_in:
         reader = csv.DictReader(f_in)
-        all_headers = reader.fieldnames or []
-        if not all_headers:
-            raise ValueError("入力CSVのヘッダが読み取れません。")
+        rows_out = _convert_stream(reader)
 
-        custom_headers = [h for h in all_headers if h not in EIGHT_FIXED_HEADER]
+    if output_csv_path:
+        out_path = Path(output_csv_path)
+        with out_path.open("w", encoding="utf-8", newline="") as f_out:
+            writer = csv.writer(f_out)
+            writer.writerows(rows_out)
+        return str(out_path)
+    else:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerows(rows_out)
+        return buf.getvalue()
 
-        writer = csv.writer(f_out)
-        writer.writerow(ATENA_HEADER)
-
-        for row in reader:
-            out_row = convert_row(row, custom_headers)
-            writer.writerow(out_row)
+# 文字列→文字列の補助（必要なら）
+def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
+    f = io.StringIO(csv_text)
+    reader = csv.DictReader(f)
+    rows_out = _convert_stream(reader)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerows(rows_out)
+    return buf.getvalue()
 
 def main():
     ap = argparse.ArgumentParser(description=f"Eight CSV → 宛名職人 CSV 変換ツール ({VERSION})")
@@ -330,8 +366,8 @@ def main():
     args = ap.parse_args()
 
     print(f"[eight_to_atena] version {VERSION}")
-    convert_eight_csv_to_atena_csv(args.input, args.output)
-    print(f"Done. → {args.output}")
+    path = convert_eight_csv_to_atena_csv(args.input, args.output)
+    print(f"Done. → {path}")
 
 if __name__ == "__main__":
     main()
