@@ -1,14 +1,15 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.4
+# Eight → 宛名職人 変換 最小版 v1.5
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
 import csv
 import re
+import json  # ← 追加
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort
 
-VERSION = "v1.3"
+VERSION = "v1.5"
 
 # ====== 宛名職人ヘッダ ======
 ATENA_HEADERS = [
@@ -41,19 +42,30 @@ COMPANY_TYPES = [
     "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託"
 ]
 
-# ====== 建物キーワード（語が出たら以降は建物扱い） ======
-BLDG_WORDS = [
-    "ANNEX","Bldg","BLDG","Bldg.","BLDG.","CABO","MRビル","Tower","TOWER",
-    "Trestage","アーバン","アネックス","イースト","ヴィラ","ウェスト","エクレール",
-    "オフィス","オリンピア","ガーデン","ガーデンタワー","カミニート","カレッジ",
-    "カンファレンス","キャッスル","キング","クルーセ","ゲート","ゲートシティ","コート",
-    "コープ","コーポ","サウス","シティ","シティタワー","シャトレ","スクウェア","スクエア",
-    "スタジアム","スタジアムプレイス","ステーション","センター","セントラル","ターミナル",
-    "タワー","タワービル","テラス","ドーム","ドミール","トリトン","ノース","パーク",
-    "ハイツ","ハウス","パルテノン","パレス","ビル","ヒルズ","ビルディング","フォレスト",
-    "プラザ","プレイス","プレステージュ","フロント","ホームズ","マンション","レジデンシャル",
-    "レジデンス","構内","倉庫"
-]
+# ====== 建物キーワードを外部JSONから読む（追加） ======
+def load_bldg_words(path: str = "bldg_words.json") -> list[str]:
+    """
+    bldg_words.json から建物語キーワードを読み込む。
+    - 余分な空白を除去
+    - 重複を排除
+    - 誤分割防止のため「長い語ほど先に」当てるよう長さ降順で返す
+    - 失敗時は空リスト（アプリが落ちないようフォールバック）
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            words = json.load(f)
+        words = [w.strip() for w in words if isinstance(w, str) and w.strip()]
+        # 重複排除
+        words = list({w: None for w in words}.keys())
+        # 長い語→短い語の順に
+        words.sort(key=len, reverse=True)
+        return words
+    except Exception:
+        return []
+
+# ====== 建物キーワード（外部ファイルからロード） ======
+BLDG_WORDS = load_bldg_words()
+
 # 階・室トリガ（出現以降は建物へ寄せる）
 FLOOR_ROOM = ["階","Ｆ","F","フロア","室","号","B1","B2","Ｂ１","Ｂ２"]
 
@@ -202,15 +214,14 @@ def split_address(addr: str):
         return "", ""
     s = addr.strip()
 
-    # 1) 「丁目/番(地)/号」「数字の数字」などを '-' に正規化（※既存の関数を使用）
+    # 1) 「丁目/番(地)/号」「数字の数字」などを '-' に正規化
     s = normalize_block_notation(s)
 
     # 2) 英文は住所1空欄・全部を住所2
     if is_english_only(s):
         return "", to_zenkaku(s)
 
-    # 3) 「～内」ハンドリングを厳格化
-    #    ※ 単独の「内」は除外（丸の内など地名で誤ヒットするため）
+    # 3) 「～内」ハンドリング（地名「丸の内」等の誤分割を避ける専用語のみ）
     inside_tokens = r"(?:ＮＨＫ内|NHK内|大学構内|センター内|工場内|構内|キャンパス内|病院内|庁舎内|体育館内|美術館内|博物館内)"
     m_inside = re.search(inside_tokens, s)
     if m_inside:
@@ -233,9 +244,7 @@ def split_address(addr: str):
         tail_stripped = tail.lstrip()
 
         # 5-1) 「番地ブロックの直後にスペース＋建物名」の明示キャッチ
-        #      例）… 15-8 <space> 宮益O.Nビル5階
         if re.match(r"^[\s　]+", tail) and tail_stripped:
-            # スペース後が建物語/階室/「～内」などの非数字開始なら建物扱い
             if (any(w in tail_stripped for w in BLDG_WORDS) or
                 any(t in tail_stripped for t in FLOOR_ROOM) or
                 re.search(inside_tokens, tail_stripped) or
@@ -251,7 +260,7 @@ def split_address(addr: str):
             idx = base.find(w)
             if idx >= 0:
                 return to_zenkaku(base[:idx]), to_zenkaku(base[idx:] + (room or "") + tail)
-        
+
         # 5-4) tail が空でも room があれば住所2へ（1-2-3-704 など）
         if room:
             return to_zenkaku(base), to_zenkaku(room)
@@ -294,7 +303,6 @@ def split_address(addr: str):
         if idx > 0:
             return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
 
-
     # 11) 最後の保険：階/室ワードで二分
     for w in FLOOR_ROOM:
         idx = s.find(w)
@@ -303,7 +311,6 @@ def split_address(addr: str):
 
     # 12) 分割不能 → 住所1に全て
     return to_zenkaku(s), ""
-
 
 # ====== Eight→宛名職人 変換（テキスト→テキスト） ======
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
