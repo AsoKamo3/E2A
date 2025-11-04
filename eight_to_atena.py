@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-eight_to_atena.py  v1.0
+eight_to_atena.py  v1.1
 
 Eight の書き出しCSVを「宛名職人」CSVに変換するワンファイルツール。
 - 文字コード: UTF-8
@@ -33,8 +33,7 @@ import sys
 import argparse
 from pathlib import Path
 
-VERSION = "v1.0"
-print(f"[eight_to_atena] version {VERSION}")
+VERSION = "v1.1"
 
 # ---- Eight 側の固定ヘッダ（ここまでが固定列） ----
 EIGHT_FIXED_HEADER = [
@@ -99,7 +98,6 @@ def to_katakana_simple(s: str) -> str:
     s = re.sub(r'[ぁ-ゖ]', lambda m: chr(ord(m.group(0)) + 0x60), s)
     # 半角ｶﾅ→全角（ざっくり）
     s = s.encode("utf-8", "ignore").decode("utf-8")
-    # ローマ字等は全角にしてそのまま（推測不能な漢字は空欄可）
     return s
 
 def strip_corp_words(name: str) -> str:
@@ -118,16 +116,10 @@ def normalize_postal(raw: str) -> str:
     return raw  # そのまま返す（異常系）
 
 # ---- 電話番号整形 ----
-# ルール：
-# - 携帯: 0x0-xxxx-xxxx
-# - 市外局番 03/04/06: 0x-xxxx-xxxx
-# - その他: NTT標準（ここでは 0A-BCDE-FGHI の近似ルール）
-# - ハイフンは必ず入れて半角、複数は ; で連結（スペースなし）
 def normalize_phone(raw: str) -> str:
     if not raw:
         return ""
     s = re.sub(r"[^\d+]", "", raw)  # 数字と + 以外除去
-    # 国番号先頭は今回は国内前提で単純化
     # 携帯: 070/080/090
     m = re.match(r"^(070|080|090)(\d{4})(\d{4})$", s)
     if m:
@@ -136,7 +128,7 @@ def normalize_phone(raw: str) -> str:
     m = re.match(r"^(0[346])(\d{4})(\d{4})$", s)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    # それ以外（ざっくり）: 0AA-BBBB-CCCC or 0AAA-BBB-CCCC
+    # その他（ざっくり）
     m = re.match(r"^(0\d{2})(\d{3,4})(\d{4})$", s)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
@@ -152,49 +144,30 @@ def normalize_dept_text(s: str) -> str:
     if not s:
         return ""
     s = to_zenkaku(s)
-    # 半角/全角スペースを全角スペースに
     s = re.sub(r"[ \u3000]+", "　", s.strip())
     return s
 
 def split_department(dept: str) -> tuple[str, str]:
-    """
-    入力を「>」「/」「｜」「|」「＞」などの区切りやスペース分割で階層化
-    ルール：
-      2階層: 前=1, 後=2
-      3階層: 前=1+2, 後=3
-      4階層: 前=1+2, 後=3+4
-      5階層: 前=1+2+3, 後=4+5
-      6階層: 前=1+2+3, 後=4+5+6
-    連結の「+」は全角、前後に全角スペース
-    文字は全角統一
-    """
     if not dept or not str(dept).strip():
         return ("","")
     s = normalize_dept_text(dept)
-    # 区切りで分割
     parts = re.split(r"[＞>／/｜|＞＞]+|　{2,}| +", s)
     parts = [p for p in parts if p]
     if not parts:
         return ("","")
-    # ルールに従い前半/後半へ
     n = len(parts)
     if n == 1:
         return (parts[0], "")
     if n == 2:
-        left = parts[0]
-        right = parts[1]
+        left = parts[0]; right = parts[1]
     elif n == 3:
-        left = f"{parts[0]}　＋　{parts[1]}"
-        right = parts[2]
+        left = f"{parts[0]}　＋　{parts[1]}"; right = parts[2]
     elif n == 4:
-        left = f"{parts[0]}　＋　{parts[1]}"
-        right = f"{parts[2]}　＋　{parts[3]}"
+        left = f"{parts[0]}　＋　{parts[1]}"; right = f"{parts[2]}　＋　{parts[3]}"
     elif n == 5:
-        left = f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}"
-        right = f"{parts[3]}　＋　{parts[4]}"
+        left = f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}"; right = f"{parts[3]}　＋　{parts[4]}"
     else:
-        left = f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}"
-        right = f"{parts[3]}　＋　{parts[4]}　＋　{parts[5]}"
+        left = f"{parts[0]}　＋　{parts[1]}　＋　{parts[2]}"; right = f"{parts[3]}　＋　{parts[4]}　＋　{parts[5]}"
     return (left, right)
 
 # ---- 建物語彙（検出強化用）----
@@ -293,15 +266,12 @@ def finalize_address(addr_raw: str) -> tuple[str, str]:
     a2 = re.sub(r"　+", "　", a2).strip()
     return (a1, a2)
 
-# ---- ふりがな（簡易推定：ひらがな→カタカナ、英数は全角化。漢字のみは空欄可）----
+# ---- ふりがな（簡易推定）----
 def guess_kana(s: str) -> str:
     if not s:
         return ""
-    # 会社名かなは法人語を除いてから
     s = re.sub(r"\s+", "", s)
-    # ひらがな→カタカナ
     s_k = to_katakana_simple(s)
-    # 既にカナが入っていればそれを採用、漢字しか無い場合は空欄
     has_kana = re.search(r"[ァ-ヴーｦ-ﾟぁ-ゖ]", s_k) is not None
     return s_k if has_kana else ""
 
@@ -309,9 +279,8 @@ def guess_company_kana(company: str) -> str:
     base = strip_corp_words(company or "")
     return guess_kana(base)
 
-# ---- メイン変換 ----
+# ---- 1行変換 ----
 def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
-    # 基本項目
     last = (eight_row.get("姓") or "").strip()
     first = (eight_row.get("名") or "").strip()
     email = (eight_row.get("e-mail") or "").strip()
@@ -327,25 +296,17 @@ def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
     dept = eight_row.get("部署名") or ""
     title = eight_row.get("役職") or ""
 
-    # 住所1/2（全角統一は finalize_address 内で実施）
     addr1, addr2 = finalize_address(addr_raw)
-
-    # 電話
     company_tel = join_phones([tel_company, tel_dept, tel_direct, fax, mobile])
-
-    # 部署分割（全角）
     dept1, dept2 = split_department(dept)
 
-    # 姓名/かな
     sei_kana = guess_kana(last)
     mei_kana = guess_kana(first)
     seimei = f"{last}{first}"
     seimei_kana = f"{sei_kana}{mei_kana}" if (sei_kana or mei_kana) else ""
-
-    # 会社名かな
     company_kana = guess_company_kana(company)
 
-    # メモ/備考（カスタム列: 値が "1" の列ヘッダを順番に）
+    # カスタム列 → メモ/備考
     memo_list = []
     biko_list = []
     for h in custom_headers:
@@ -362,87 +323,31 @@ def convert_row(eight_row: dict, custom_headers: list[str]) -> list[str]:
     memo4 = memo_list[3] if len(memo_list) > 3 else ""
     memo5 = memo_list[4] if len(memo_list) > 4 else ""
     biko1 = "\n".join(biko_list) if biko_list else ""
-    # 備考2/3 は今回未使用
     biko2 = ""
     biko3 = ""
 
-    # 宛名職人の出力順に並べる
     out = [
-        last,                       # 姓
-        first,                      # 名
-        sei_kana,                   # 姓かな
-        mei_kana,                   # 名かな
-        seimei,                     # 姓名
-        seimei_kana,                # 姓名かな
-        "",                         # ミドルネーム
-        "",                         # ミドルネームかな
-        "",                         # 敬称
-        "",                         # ニックネーム
-        "",                         # 旧姓
-        "",                         # 宛先
-        "",                         # 自宅〒
-        "",                         # 自宅住所1
-        "",                         # 自宅住所2
-        "",                         # 自宅住所3
-        "",                         # 自宅電話
-        "",                         # 自宅IM ID
-        "",                         # 自宅E-mail
-        "",                         # 自宅URL
-        "",                         # 自宅Social
-        postal,                     # 会社〒
-        addr1,                      # 会社住所1
-        addr2,                      # 会社住所2
-        "",                         # 会社住所3
-        company_tel,                # 会社電話（; 連結）
-        "",                         # 会社IM ID
-        email,                      # 会社E-mail
-        url,                        # 会社URL
-        "",                         # 会社Social
+        last, first,                  # 姓, 名
+        sei_kana, mei_kana,          # 姓かな, 名かな
+        seimei, seimei_kana,         # 姓名, 姓名かな
+        "", "", "",                  # ミドル, ミドルかな, 敬称
+        "", "",                      # ニック, 旧姓
+        "",                          # 宛先
+        "", "", "", "",              # 自宅〒, 自宅住所1,2,3
+        "",                          # 自宅電話
+        "", "", "", "",              # 自宅IM, 自宅Email, 自宅URL, 自宅Social
+        postal,                      # 会社〒
+        addr1, addr2, "",            # 会社住所1,2,3
+        company_tel,                 # 会社電話
+        "",                          # 会社IM
+        email,                       # 会社Email
+        url,                         # 会社URL
+        "",                          # 会社Social
         "", "", "", "", "", "", "", "",  # その他ブロック
-        company_kana,               # 会社名かな
-        company,                    # 会社名
-        dept1,                      # 部署名1
-        dept2,                      # 部署名2
+        company_kana,                # 会社名かな
+        company,                     # 会社名
+        dept1, dept2,                # 部署名1,2
         to_zenkaku(title) if title else "",  # 役職名（全角）
-        "", "", "",                 # 連名系
+        "", "", "",                  # 連名
         memo1, memo2, memo3, memo4, memo5,  # メモ1..5
-        biko1, biko2, biko3,        # 備考1..3（備考1は改行区切り）
-        "", "", "", "", ""          # 誕生日/性別/血液型/趣味/性格
-    ]
-    return out
-
-def main():
-    ap = argparse.ArgumentParser(description="Eight CSV → 宛名職人 CSV 変換ツール (v1.0)")
-    ap.add_argument("-i", "--input", required=True, help="Eight 書き出しCSV (UTF-8)")
-    ap.add_argument("-o", "--output", required=True, help="宛名職人用 出力CSV (UTF-8)")
-    args = ap.parse_args()
-
-    in_path = Path(args.input)
-    out_path = Path(args.output)
-
-    with in_path.open("r", encoding="utf-8", newline="") as f_in, \
-         out_path.open("w", encoding="utf-8", newline="") as f_out:
-
-        reader = csv.DictReader(f_in)
-        # Eight のカラムを把握
-        all_headers = reader.fieldnames or []
-        if not all_headers:
-            print("ERROR: 入力CSVのヘッダが読み取れません。", file=sys.stderr)
-            sys.exit(1)
-
-        # 固定ヘッダ + カスタムヘッダ
-        fixed = EIGHT_FIXED_HEADER
-        # 入力側の実ヘッダ順に基づき、固定以外をカスタムと見なす
-        custom_headers = [h for h in all_headers if h not in fixed]
-
-        writer = csv.writer(f_out)
-        writer.writerow(ATENA_HEADER)
-
-        for row in reader:
-            out_row = convert_row(row, custom_headers)
-            writer.writerow(out_row)
-
-    print(f"Done. → {out_path}")
-
-if __name__ == "__main__":
-    main()
+        biko1, biko2, biko3,
