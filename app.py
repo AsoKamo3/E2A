@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.2
+# Eight → 宛名職人 変換 最小版 v1.3
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort
 
-VERSION = "v1.2"
+VERSION = "v1.3"
 
 # ====== 宛名職人ヘッダ ======
 ATENA_HEADERS = [
@@ -193,89 +193,113 @@ def normalize_block_notation(s: str) -> str:
 
     return s
 
-# ====== 住所分割（v14 相当・確定ルール） ======
+# ====== 住所分割（v16） ======
 def split_address(addr: str):
     if not addr:
         return "", ""
     s = addr.strip()
 
-    # ★★ 分割前にハイフン正規化 ★★
+    # 1) 「丁目/番(地)/号」「数字の数字」などを '-' に正規化（※既存の関数を使用）
     s = normalize_block_notation(s)
 
-    # 英文は住所1空欄で全塊を住所2
+    # 2) 英文は住所1空欄・全部を住所2
     if is_english_only(s):
         return "", to_zenkaku(s)
 
-    # 「NHK内/大学構内/センター内/工場内」などは以降まとめて住所2
-    inside_tokens = r"(?:ＮＨＫ内|NHK内|大学構内|センター内|工場内|構内|内)"
+    # 3) 「～内」ハンドリングを厳格化
+    #    ※ 単独の「内」は除外（丸の内など地名で誤ヒットするため）
+    inside_tokens = r"(?:ＮＨＫ内|NHK内|大学構内|センター内|工場内|構内|キャンパス内|病院内|庁舎内|体育館内|美術館内|博物館内)"
     m_inside = re.search(inside_tokens, s)
     if m_inside:
         left = s[:m_inside.start()]
         right = s[m_inside.start():]
         return to_zenkaku(left), to_zenkaku(right)
 
-    # 基本：先頭から「…数字1-数字2-数字3」までが住所1、以降（建物語＋階室含む）は住所2
-    # 可変のダッシュに対応
+    # 4) 可変ハイフン／数字
     dash = r"[‐-‒–—―ｰ\-−]"
-    num = r"[0-9０-９]+"
-    # 最長で 1-2-3-4（4は部屋番号のことが多い）
-    # パターン1: ～ 1-2-3-4 建物/無し（4があれば4は住所2へ）
+    num  = r"[0-9０-９]+"
+
+    # 5) 基本：先頭から「… 数字1-数字2-数字3（-数字4任意）」までを住所1、
+    #    以降（建物語・階室を含む）は住所2
     p = re.compile(rf"^(?P<base>.*?{num}{dash}{num}{dash}{num})(?:{dash}(?P<room>{num}))?(?P<tail>.*)$")
     m = p.match(s)
     if m:
         base = m.group("base")
         room = m.group("room") or ""
         tail = m.group("tail") or ""
-        # tail に建物語先頭があるなら丸ごと住所2。無ければ room/tail を見て判断
-        if tail:
-            # 建物語 or 階・室が出たら以降は住所2
-            if any(w in tail for w in BLDG_WORDS) or any(t in tail for t in FLOOR_ROOM):
-                return to_zenkaku(base), to_zenkaku((room and room) + tail)
-            # 建物語が base 側に連結しているパターン（例：…15桑野ビル2F）
-            for w in BLDG_WORDS:
-                idx = base.find(w)
-                if idx >= 0:
-                    # …15／桑野ビル2F へ
-                    return to_zenkaku(base[:idx]), to_zenkaku(base[idx:] + (room or "") + tail)
-        # tail が空でも room があれば住所2へ
+        tail_stripped = tail.lstrip()
+
+        # 5-1) 「番地ブロックの直後にスペース＋建物名」の明示キャッチ
+        #      例）… 15-8 <space> 宮益O.Nビル5階
+        if re.match(r"^[\s　]+", tail) and tail_stripped:
+            # スペース後が建物語/階室/「～内」などの非数字開始なら建物扱い
+            if (any(w in tail_stripped for w in BLDG_WORDS) or
+                any(t in tail_stripped for t in FLOOR_ROOM) or
+                re.search(inside_tokens, tail_stripped) or
+                re.match(r"^[^\d０-９]", tail_stripped)):
+                return to_zenkaku(base), to_zenkaku((room or "") + tail_stripped)
+
+        # 5-2) tail に建物語・階室があれば建物へ
+        if tail_stripped and (any(w in tail_stripped for w in BLDG_WORDS) or any(t in tail_stripped for t in FLOOR_ROOM)):
+            return to_zenkaku(base), to_zenkaku((room or "") + tail_stripped)
+
+        # 5-3) 建物語が base 側に連結している（…15桑野ビル2F 等）
+        for w in BLDG_WORDS:
+            idx = base.find(w)
+            if idx >= 0:
+                return to_zenkaku(base[:idx]), to_zenkaku(base[idx:] + (room or "") + tail)
+
+        # 5-4) tail が空でも room があれば住所2へ（1-2-3-704 など）
         if room:
             return to_zenkaku(base), to_zenkaku(room)
-        # ここまで来たら全て住所1（建物なし）
+
+        # 5-5) ここまで来たら建物なし
         return to_zenkaku(s), ""
 
-    # パターン2: ～ 1-2-3建物名（ダッシュ3つ目の後が建物）
+    # 6) 「数字1-数字2-数字3 + 直結建物」
     p2 = re.compile(rf"^(?P<pre>.*?{num}{dash}{num}{dash}{num})(?P<bldg>.+)$")
     m2 = p2.match(s)
     if m2:
         return to_zenkaku(m2.group("pre")), to_zenkaku(m2.group("bldg"))
 
-    # パターン3: ～ 1-2建物名
+    # 7) 「数字1-数字2 + 直結建物」
     p3 = re.compile(rf"^(?P<pre>.*?{num}{dash}{num})(?P<bldg>.+)$")
     m3 = p3.match(s)
     if m3:
         return to_zenkaku(m3.group("pre")), to_zenkaku(m3.group("bldg"))
 
-    # パターン4: ～ 1丁目2番3号（＋任意）
+    # 8) スペースでの分割（番地ブロックの直後が空白→建物）
+    p_space3 = re.compile(rf"^(?P<pre>.*?{num}{dash}{num}{dash}{num})[\s　]+(?P<bldg>.+)$")
+    m_space3 = p_space3.match(s)
+    if m_space3:
+        return to_zenkaku(m_space3.group("pre")), to_zenkaku(m_space3.group("bldg"))
+
+    p_space2 = re.compile(rf"^(?P<pre>.*?{num}{dash}{num})[\s　]+(?P<bldg>.+)$")
+    m_space2 = p_space2.match(s)
+    if m_space2:
+        return to_zenkaku(m_space2.group("pre")), to_zenkaku(m_space2.group("bldg"))
+
+    # 9) 「～丁目～番～号 + 任意」
     p4 = re.compile(rf"^(?P<pre>.*?{num}丁目{num}番{num}号)(?P<bldg>.*)$")
     m4 = p4.match(s)
     if m4:
         return to_zenkaku(m4.group("pre")), to_zenkaku(m4.group("bldg"))
 
-    # どれでもない：建物語キーワードの最初の出現位置で二分
+    # 10) 建物語キーワードの最初の出現位置で二分
     for w in BLDG_WORDS:
         idx = s.find(w)
         if idx > 0:
             return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
 
-    # 最後の保険：階/室ワードが出たらそこで二分
+    # 11) 最後の保険：階/室ワードで二分
     for w in FLOOR_ROOM:
         idx = s.find(w)
         if idx > 0:
-            # その語の手前までを住所1、以降を住所2
             return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
 
-    # 分割不能 → 住所1に全て
+    # 12) 分割不能 → 住所1に全て
     return to_zenkaku(s), ""
+
 
 # ====== Eight→宛名職人 変換（テキスト→テキスト） ======
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
