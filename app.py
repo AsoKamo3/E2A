@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.3
+# Eight → 宛名職人 変換 最小版 v1.4
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
@@ -196,7 +196,7 @@ def normalize_block_notation(s: str) -> str:
 
     return s
 
-# ====== 住所分割（v16） ======
+# ====== 住所分割（v17） ======
 def split_address(addr: str):
     if not addr:
         return "", ""
@@ -247,11 +247,11 @@ def split_address(addr: str):
             return to_zenkaku(base), to_zenkaku((room or "") + tail_stripped)
 
         # 5-3) 建物語が base 側に連結している（…15桑野ビル2F 等）
-        for w in BLDG_WORDS:
+        for w in sorted(BLDG_WORDS, key=len, reverse=True):
             idx = base.find(w)
             if idx >= 0:
                 return to_zenkaku(base[:idx]), to_zenkaku(base[idx:] + (room or "") + tail)
-
+        
         # 5-4) tail が空でも room があれば住所2へ（1-2-3-704 など）
         if room:
             return to_zenkaku(base), to_zenkaku(room)
@@ -289,10 +289,11 @@ def split_address(addr: str):
         return to_zenkaku(m4.group("pre")), to_zenkaku(m4.group("bldg"))
 
     # 10) 建物語キーワードの最初の出現位置で二分
-    for w in BLDG_WORDS:
+    for w in sorted(BLDG_WORDS, key=len, reverse=True):
         idx = s.find(w)
         if idx > 0:
             return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
+
 
     # 11) 最後の保険：階/室ワードで二分
     for w in FLOOR_ROOM:
