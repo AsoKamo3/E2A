@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.0
+# Eight → 宛名職人 変換 最小版 v1.1
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
@@ -166,104 +166,117 @@ def is_english_only(addr: str) -> bool:
     # 日本語っぽい文字が一切無く、英数・空白・記号主体なら英文扱い
     return not re.search(r"[一-龠ぁ-んァ-ヶｱ-ﾝー々〆ヵヶ]", addr) and re.search(r"[A-Za-z]", addr)
 
-# ====== 住所分割（v15） ======
+# ====== 住所分割（v16） ======
 def split_address(addr: str):
     """
     ルール要約（確定分）：
-    - 英文のみ → 住所1は空、住所2に全文
-    - 「NHK内 / 大学構内 / センター内 / 工場内 / 構内 / 内」は出現位置から後ろを住所2
-    - 基本は「… 数字1－数字2－数字3（－数字4）」で分割
-        * 1-2-3 までを住所1、後続は建物等として住所2
-        * 1-2-3-4 の 4 は原則「部屋番号」扱い → 住所2 に送る
-        * 「1-2-3直後に建物名が連結」(区切り無し) でも、必ず 1-2-3 で切る
-    - 「… 丁目 番 号」系も同様に、号までを住所1、後続は住所2
-    - 県名や都名が無くても、前方（区から）を住所1として扱う
-    - 階／室トリガ（例：階, Ｆ, 号, 室…）が出たら以降は住所2
-    - 全角統一は最終出力で適用
+    - 英文のみ → 住所1空欄・全塊を住所2
+    - 「NHK内/大学構内/センター内/工場内/倉庫内/駅構内/ビル内/スタジオ内/会場内/施設内」などは、
+      語の先頭から後ろを丸ごと住所2へ（※素の「内」単独では判定しないので「丸の内」は誤分割しない）
+    - 数字の塊が 1～3 セグメントでも分割（1-2-3[-部屋] / 1-2 / 1 + 建物）
+      → 「先頭から数字ブロック」までが住所1、その後（建物語＋階室）は住所2
+    - 「…丁目…番…号」形式も同様に分割
+    - 最後に「住所2 が『内/構内』だけになってしまった場合」は、
+      住所1の末尾の語（駅/スタジオ/倉庫/ビル等）を前方に連結して「○○内/○○構内」に補正
+    - 出力は住所1/住所2とも全角統一
     """
     if not addr:
         return "", ""
 
     s = addr.strip()
 
-    # 英文のみ → 住所1空欄・全文を住所2
+    # 英文は住所1空欄で全塊を住所2
     if is_english_only(s):
         return "", to_zenkaku(s)
 
-    # 「NHK内 / 大学構内 / センター内 / 工場内 / 構内 / 内」出現以降は住所2
-    inside_tokens = r"(?:ＮＨＫ内|NHK内|大学構内|センター内|工場内|構内|内)"
-    m_inside = re.search(inside_tokens, s)
-    if m_inside:
-        left = s[:m_inside.start()]
-        right = s[m_inside.start():]
-        return to_zenkaku(left), to_zenkaku(right)
-
-    # 可変ダッシュ & 全角数字対応
-    dash = r"[‐\-‒–—―ｰ−]"
-    num = r"[0-9０-９]+"
-
-    # 1) 「… 数字1-数字2-数字3[-数字4] …」の最優先判定
-    #    ここで“必ず” 数字3 までを住所1とし、それ以降（数字4 + 文字）は住所2。
-    p1234 = re.compile(
-        rf"^(?P<pre>.*?)(?P<n1>{num}){dash}(?P<n2>{num}){dash}(?P<n3>{num})(?:{dash}(?P<n4>{num}))?(?P<tail>.*)$"
+    dash = r"[‐\-‒–—―ｰ−]"          # 各種ハイフン
+    num  = r"[0-9０-９]+"           # 全半角数字
+    # 「内」系（素の「内」は含めない）
+    inside_terms = (
+        "ＮＨＫ内","NHK内","大学構内","センター内","工場内","倉庫内",
+        "駅構内","ビル内","スタジオ内","会場内","施設内","構内"
     )
-    m = p1234.match(s)
+
+    import re
+
+    # 1) 「内」系が明確に登場する場合：その語の先頭以降を住所2へ
+    for t in inside_terms:
+        i = s.find(t)
+        if i >= 0:
+            left  = s[:i]
+            right = s[i:]
+            return to_zenkaku(left), to_zenkaku(right)
+
+    # 2) 数字ブロック 1-2-3-4（4は部屋など）: 1-2-3 まで住所1、以降を住所2
+    m = re.match(rf"^(?P<pre>.*?{num}{dash}{num}{dash}{num})(?:{dash}(?P<room>{num}))(?P<tail>.*)$", s)
     if m:
-        pre  = m.group("pre") or ""
-        n1   = m.group("n1")
-        n2   = m.group("n2")
-        n3   = m.group("n3")
-        n4   = m.group("n4") or ""
+        pre  = m.group("pre")
+        room = m.group("room") or ""
         tail = m.group("tail") or ""
+        addr1 = pre
+        addr2 = room + tail
+        # 補正：「内/構内」の単独化を防ぐ（後段の共通補正でも処理するが念のため）
+        addr1, addr2 = _fix_inside_tail(addr1, addr2)
+        return to_zenkaku(addr1), to_zenkaku(addr2)
 
-        base = f"{pre}{n1}-{n2}-{n3}"   # ここで必ず 1-2-3 までを住所1側へ
+    # 3) 数字ブロック 1-2-3 + 建物
+    m = re.match(rf"^(?P<pre>.*?{num}{dash}{num}{dash}{num})(?P<bldg>.+)$", s)
+    if m:
+        return to_zenkaku(m.group("pre")), to_zenkaku(m.group("bldg"))
 
-        # 1-2-3 の後ろに「建物名が直結」していても、ここでまとめて住所2へ送る
-        # 1-2-3-4 の 4 は部屋番号扱いで住所2。さらに tail があれば連結。
-        right = ""
-        if n4 and tail:
-            right = f"{n4}{tail}"
-        elif n4:
-            right = n4
-        else:
-            right = tail
+    # 4) 数字ブロック 1-2 + 建物
+    m = re.match(rf"^(?P<pre>.*?{num}{dash}{num})(?P<bldg>[^0-9].+)$", s)
+    if m:
+        return to_zenkaku(m.group("pre")), to_zenkaku(m.group("bldg"))
 
-        # もし right が空であれば、建物なし → すべて住所1
-        if not right:
-            return to_zenkaku(base), ""
+    # 5) 数字ブロック 1 + 建物（←今回の追加）
+    #   例: 「…１５桑野ビル２Ｆ」や「…１ 新館」など、ハイフンが無いが番地→建物の流れ
+    m = re.match(rf"^(?P<pre>.*?{num})(?P<bldg>[^0-9].+)$", s)
+    if m:
+        return to_zenkaku(m.group("pre")), to_zenkaku(m.group("bldg"))
 
-        # 「階・室」が base 側にくっ付いてくるケースはここでは発生させない
-        # （必ず 1-2-3 で切っているため）
+    # 6) ～○丁目○番○号 + 任意（建物）
+    m = re.match(rf"^(?P<pre>.*?{num}丁目{num}番{num}号)(?P<bldg>.*)$", s)
+    if m:
+        return to_zenkaku(m.group("pre")), to_zenkaku(m.group("bldg"))
 
-        return to_zenkaku(base), to_zenkaku(right)
-
-    # 2) 「… 数字1-数字2 建物名」パターン（2要素の番地でも建物が続く場合）
-    p12_bldg = re.compile(rf"^(?P<pre>.*?{num}{dash}{num})(?P<bldg>.+)$")
-    m12 = p12_bldg.match(s)
-    if m12:
-        return to_zenkaku(m12.group("pre")), to_zenkaku(m12.group("bldg"))
-
-    # 3) 「… 数字丁目数字番数字号（＋任意）」：号まで住所1、後続は住所2
-    p_chome = re.compile(rf"^(?P<pre>.*?{num}丁目{num}番{num}号)(?P<bldg>.*)$")
-    m_chome = p_chome.match(s)
-    if m_chome:
-        return to_zenkaku(m_chome.group("pre")), to_zenkaku(m_chome.group("bldg"))
-
-    # 4) 最後の保険：よくある建物語が現れたら、最初の出現位置で二分
-    #    ※ “建物の前半が落ちる”事故を避けるため、ここで base 側は触らない
+    # 7) ビル語での分割（最後の保険）
+    #    ここではキーワードの出現位置から二分（キーワードの手前＝住所1／以降＝住所2）
     for w in BLDG_WORDS:
-        idx = s.find(w)
-        if idx > 0:
-            return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
+        i = s.find(w)
+        if i > 0:
+            return to_zenkaku(s[:i]), to_zenkaku(s[i:])
 
-    # 5) 階・室の語が出たら、その語の位置で分割
+    # 8) 「階/室」語での分割（更なる保険）
     for w in FLOOR_ROOM:
-        idx = s.find(w)
-        if idx > 0:
-            return to_zenkaku(s[:idx]), to_zenkaku(s[idx:])
+        i = s.find(w)
+        if i > 0:
+            addr1 = s[:i]
+            addr2 = s[i:]
+            addr1, addr2 = _fix_inside_tail(addr1, addr2)
+            return to_zenkaku(addr1), to_zenkaku(addr2)
 
-    # 分割できないものは住所1に全て入れる
+    # 分割不能 → 住所1に全て
     return to_zenkaku(s), ""
+
+
+def _fix_inside_tail(addr1: str, addr2: str):
+    """
+    住所2 が「内/構内」から始まってしまうケースを補正。
+    住所1 末尾の語（駅/スタジオ/倉庫/ビル等）を前方に連結して『○○内/○○構内』へ。
+    """
+    if not addr2:
+        return addr1, addr2
+    s2 = addr2.strip()
+    if s2.startswith("内") or s2.startswith("構内"):
+        # 住所1末尾の「単語」を取得（数字やハイフン連結子は除外）
+        m = re.search(r"([^\s　0-9０-９" + r"‐\-‒–—―ｰ−" + r"]+)$", addr1.strip())
+        if m:
+            word = m.group(1)
+            # addr1 末尾からこの語を除去（前後空白も調整）
+            addr1 = re.sub(re.escape(word) + r"\s*$", "", addr1.strip())
+            addr2 = word + s2
+    return addr1, addr2
 
 # ====== Eight→宛名職人 変換（テキスト→テキスト） ======
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
