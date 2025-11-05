@@ -1,19 +1,14 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.6
+# Eight → 宛名職人 変換 最小版 v1.8
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
-import csv
-import re
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort
 
-# 今回の変更点:
-# - VERSION を v1.6 に更新
-# - 変換関数は services.eight_to_atena から直接 import
-from services.eight_to_atena import convert_eight_csv_text_to_atena_csv_text
+from services.eight_to_atena import convert_eight_csv_text_to_atena_csv_text, __version__ as CONVERTER_VERSION
 
-VERSION = "v1.6"
+VERSION = "v1.8"
 
 # ====== Web: 超簡易UI（Jinja文字列） ======
 INDEX_HTML = """
@@ -34,7 +29,7 @@ INDEX_HTML = """
 </head>
 <body>
   <div class="card">
-    <h1>Eight → 宛名職人 変換 <span class="ver">({{version}})</span></h1>
+    <h1>Eight → 宛名職人 変換 <span class="ver">({{version}} / core {{corever}})</span></h1>
     <form method="post" action="/convert" enctype="multipart/form-data">
       <input type="file" name="file" accept=".csv" required />
       <div class="muted">UTF-8 / カンマ区切りの Eight CSV を選択してください。</div>
@@ -45,11 +40,12 @@ INDEX_HTML = """
 </html>
 """
 
+from flask import Flask
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template_string(INDEX_HTML, version=VERSION)
+    return render_template_string(INDEX_HTML, version=VERSION, corever=CONVERTER_VERSION)
 
 @app.route("/convert", methods=["POST"])
 def convert():
