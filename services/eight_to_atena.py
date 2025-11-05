@@ -120,26 +120,36 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
                     biko += (("\n" if biko else "") + hdr)
 
         out_row = [
-            last, first,                      # 姓, 名
-            last_kana, first_kana,            # 姓かな, 名かな
-            full_name, full_name_kana,        # 姓名, 姓名かな
-            "", "", "",                       # ミドル・ミドルかな・敬称
-            "", "", "",                       # ニックネーム・旧姓・宛先
-            "", "", "", "", "",               # 自宅系 未使用
-            "", "", "", "",                   # 自宅続き
-            postcode, addr1, addr2, "",       # 会社〒, 会社住所1, 会社住所2, 会社住所3
-            phone_join, "", email,            # 会社電話, 会社IM, 会社E-mail
-            url, "",                          # 会社URL, 会社Social
-            "", "", "", "", "", "", "", "",   # その他系 未使用
-            company_kana, company,            # 会社名かな, 会社名
-            dept1, dept2,                     # 部署名1, 部署名2
-            title,                            # 役職名
-            "", "", "", "",                   # 連名系
-            memo[0], memo[1], memo[2], memo[3], memo[4],  # メモ1..5
-            biko, "", "",                     # 備考1..3
-            "", "", "", "",                   # 誕生日, 性別, 血液型, 趣味, 性格
+            last, first,                   # 1-2: 姓, 名
+            last_kana, first_kana,         # 3-4: 姓かな, 名かな
+            full_name, full_name_kana,     # 5-6: 姓名, 姓名かな
+            "", "", "",                    # 7-9: ミドル/ミドルかな/敬称
+            "", "", "",                    # 10-12: ニック/旧姓/宛先
+            "", "", "", "", "",            # 13-17: 自宅〒/住所1/住所2/住所3/電話
+            "", "", "", "",                # 18-21: 自宅IM/E-mail/URL/Social
+            postcode, addr1, addr2, "",    # 22-25: 会社〒/住所1/住所2/住所3
+            phone_join, "", email,         # 26-28: 会社電話/IM/E-mail
+            url, "",                       # 29-30: 会社URL/Social
+
+            # ▼▼ その他（9個）: 〒 / 住所1 / 住所2 / 住所3 / 電話 / IM / E-mail / URL / Social
+            "", "", "", "", "", "", "", "",  # 31-39
+
+            company_kana, company,         # 40-41: 会社名かな, 会社名
+            dept1, dept2,                  # 42-43: 部署名1, 部署名2
+            title,                         # 44: 役職名
+            "", "", "", "",                # 45-48: 連名系
+            memo[0], memo[1], memo[2], memo[3], memo[4],   # 49-53: メモ1..5
+            biko, "", "",                  # 54-56: 備考1..3
+            "", "", "", ""                 # 57-61: 誕生日, 性別, 血液型, 趣味, 性格
         ]
-        rows_out.append(out_row)
+
+        # ズレ防止の安全策（任意だが推奨）
+        if len(out_row) < len(ATENA_HEADERS):
+            out_row += [""] * (len(ATENA_HEADERS) - len(out_row))
+        elif len(out_row) > len(ATENA_HEADERS):
+            out_row = out_row[:len(ATENA_HEADERS)]
+
+        rows.append(out_row)
 
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
