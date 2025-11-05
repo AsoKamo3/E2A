@@ -4,9 +4,10 @@
 # テキスト正規化は utils.textnorm を使用
 # バージョン履歴:
 #   v1.1: convert_eight_csv_text_to_atena_csv_text を本モジュールで唯一実装
-#         （app.py からは本モジュールを直接 import する）
+#   v1.2: （一時）ヘッダ末尾の「性格」を削除した版
+#   v1.3: ヘッダ末尾「性格」を復帰し、"その他" ブロックを厳密に9列出力（列ずれ修正）
 
-__version__ = "v1.1"
+__version__ = "v1.3"
 
 import io
 import csv
@@ -19,7 +20,7 @@ from utils.textnorm import (
 )
 from converters.address import split_address
 
-# ====== 宛名職人ヘッダ（順序厳守） ======
+# ====== 宛名職人ヘッダ（末尾は「性格」まで・順序厳守） ======
 ATENA_HEADERS = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
     "ニックネーム","旧姓","宛先","自宅〒","自宅住所1","自宅住所2","自宅住所3","自宅電話",
@@ -33,6 +34,7 @@ ATENA_HEADERS = [
     "メモ1","メモ2","メモ3","メモ4","メモ5",
     "備考1","備考2","備考3","誕生日","性別","血液型","趣味","性格"
 ]
+# 「その他〒～その他Social」は 9 列（インデックス 30..38）です。
 
 # ====== Eight 側の固定カラム（この順で存在する想定） ======
 EIGHT_FIXED = [
@@ -61,10 +63,9 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     out_rows = []
 
     for row in reader:
-        # 値取得のユーティリティ
         g = lambda k: (row.get(k, "") or "").strip()
 
-        # --- 入力（Eight）側取り出し ---
+        # --- 入力（Eight） ---
         company     = g("会社名")
         dept        = g("部署名")
         title       = g("役職")
@@ -83,33 +84,31 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         # --- 住所分割 ---
         addr1, addr2 = split_address(addr_raw)
 
-        # --- 電話の正規化と結合（; 連結） ---
+        # --- 電話まとめ（; 連結） ---
         phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
-        # --- 部署の二分割（前半/後半） ---
+        # --- 部署の二分割 ---
         dept1, dept2 = split_department(dept)
 
         # --- 姓名とかな ---
         full_name       = f"{last}{first}"
-        full_name_kana  = ""  #（任意機能。必要なら utils.kana 側で制御）
+        full_name_kana  = ""
         last_kana       = to_katakana_guess(last)
         first_kana      = to_katakana_guess(first)
 
-        # --- 会社名かな（会社種別は除去してから推定） ---
+        # --- 会社名かな（会社種別除去後に推定） ---
         company_for_kana = company
         for t in COMPANY_TYPES:
             company_for_kana = company_for_kana.replace(t, "")
         company_kana = to_katakana_guess(company_for_kana)
 
-        # --- カスタム列（固定以降）: 値が "1" のヘッダ名をメモ1..5/備考1 に格納 ---
+        # --- カスタム列: 値が "1" のヘッダ名をメモ1..5 / 溢れは備考1へ ---
         memo = ["", "", "", "", ""]
         biko = ""
-        fixed_len = len(EIGHT_FIXED)
-        extra_headers = (reader.fieldnames or [])[fixed_len:]
+        extra_headers = (reader.fieldnames or [])[len(EIGHT_FIXED):]
         for hdr in extra_headers:
             val = (row.get(hdr, "") or "").strip()
             if val == "1":
-                # 空いているメモ枠に追加、満杯なら備考1に追記
                 for i in range(5):
                     if not memo[i]:
                         memo[i] = hdr
@@ -117,7 +116,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
                 else:
                     biko += (("\n" if biko else "") + hdr)
 
-        # --- 宛名職人 行（ATENA_HEADERS と 1:1 対応・ズレ防止） ---
+        # --- 宛名職人 行（ATENA_HEADERS と 1:1・列数チェック付き） ---
         out_row = [
             # 0-5: 姓/名/かな/姓名
             last, first,
@@ -128,24 +127,24 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             "", "", "",         # ミドルネーム, ミドルネームかな, 敬称
             "", "", "",         # ニックネーム, 旧姓, 宛先
 
-            # 12-20: 自宅系 未使用
-            "", "", "", "", "",  # 自宅〒, 自宅住所1..3, 自宅電話
-            "", "", "", "",       # 自宅IM, 自宅E-mail, 自宅URL, 自宅Social
+            # 12-20: 自宅系（未使用）
+            "", "", "", "", "",            # 自宅〒, 自宅住所1..3, 自宅電話
+            "", "", "", "",                # 自宅IM ID, 自宅E-mail, 自宅URL, 自宅Social
 
-            # 21-29: 会社系（住所/連絡）
-            postcode, addr1, addr2, "",  # 会社〒, 会社住所1, 会社住所2, 会社住所3
-            phone_join, "", email,       # 会社電話, 会社IM ID, 会社E-mail
-            url, "",                     # 会社URL, 会社Social
+            # 21-29: 会社系
+            postcode, addr1, addr2, "",    # 会社〒, 会社住所1, 会社住所2, 会社住所3
+            phone_join, "", email,         # 会社電話, 会社IM ID, 会社E-mail
+            url, "",                       # 会社URL, 会社Social
 
-            # 30-38: その他系 未使用
-            "", "", "", "", "", "", "", "",
+            # 30-38: その他系（**9列必須**）
+            "", "", "", "", "", "", "", "",  # ← ここが9列（不足すると以降が1つ右へずれる）
 
             # 39-43: 会社名かな/会社名/部署/役職
-            company_kana, company,       # 会社名かな, 会社名
-            dept1, dept2,                # 部署名1, 部署名2
-            title,                       # 役職名
+            company_kana, company,         # 会社名かな, 会社名
+            dept1, dept2,                  # 部署名1, 部署名2
+            title,                         # 役職名
 
-            # 44-47: 連名系 未使用
+            # 44-47: 連名系（未使用）
             "", "", "", "",
 
             # 48-52: メモ1..5
@@ -154,9 +153,16 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             # 53-55: 備考1..3
             biko, "", "",
 
-            # 56-60: 誕生日/性別/血液型/趣味/性格
-            "", "", "", "", 
+            # 56-61: 誕生日/性別/血液型/趣味/性格（ヘッダ末尾まで）
+            "", "", "", "", "",  # ← 「性格」まで
         ]
+
+        # 安全チェック（ヘッダと列数が一致しない場合は例外）
+        if len(out_row) != len(ATENA_HEADERS):
+            raise RuntimeError(
+                f"出力列数がヘッダと不一致: row={len(out_row)} headers={len(ATENA_HEADERS)}"
+            )
+
         out_rows.append(out_row)
 
     # --- 書き出し ---
