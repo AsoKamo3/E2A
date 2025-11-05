@@ -1,27 +1,21 @@
 # services/eight_to_atena.py
-# Eight CSV → 宛名職人CSV 変換本体（I/Oと行マッピングのみ）
-# 住所分割は converters.address.split_address に委譲
-# テキスト正規化は utils.textnorm を使用
-# バージョン履歴:
-#   v1.1: convert_eight_csv_text_to_atena_csv_text を本モジュールで唯一実装
-#   v1.2: （一時）ヘッダ末尾の「性格」を削除した版
-#   v1.3: ヘッダ末尾「性格」を復帰し、"その他" ブロックを厳密に9列出力（列ずれ修正）
-#   v1.4: 末尾の5列を確実に出力 + ヘッダ長へのパディング安全策を追加（row=60 headers=61対策）
-
-__version__ = "v1.4"
-
+# Eight CSV → 宛名職人CSV 変換本体（I/Oと行マッピング）
+from __future__ import annotations
 import io
 import csv
 
+from converters.address import split_address
 from utils.textnorm import (
+    to_zenkaku,
     normalize_postcode,
     normalize_phone,
     split_department,
-    to_katakana_guess,
 )
-from converters.address import split_address
+from utils.kana import to_katakana_guess  # ← 正しい所在
 
-# ====== 宛名職人ヘッダ（末尾は「性格」まで・順序厳守） ======
+__version__ = "1.8"
+
+# 宛名職人のヘッダ（61列）— この順序に厳密に合わせて出力する
 ATENA_HEADERS = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
     "ニックネーム","旧姓","宛先","自宅〒","自宅住所1","自宅住所2","自宅住所3","自宅電話",
@@ -35,139 +29,133 @@ ATENA_HEADERS = [
     "メモ1","メモ2","メモ3","メモ4","メモ5",
     "備考1","備考2","備考3","誕生日","性別","血液型","趣味","性格"
 ]
-# 「その他〒～その他Social」は 9 列（インデックス 30..38）です。
 
-# ====== Eight 側の固定カラム（この順で存在する想定） ======
+# Eight 固定カラム（先頭の既知列）
 EIGHT_FIXED = [
     "会社名","部署名","役職","姓","名","e-mail","郵便番号","住所","TEL会社",
     "TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
 ]
 
-# ====== 会社種別（かな除外対象） ======
-COMPANY_TYPES = [
-    "株式会社","有限会社","合同会社","合資会社","合名会社","相互会社","清算株式会社",
-    "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
-    "特定非営利活動法人","ＮＰＯ法人","中間法人","有限責任中間法人","特例民法法人",
-    "学校法人","医療法人","医療法人社団","医療法人財団","宗教法人","社会福祉法人",
-    "国立大学法人","公立大学法人","独立行政法人","地方独立行政法人","特殊法人",
-    "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託"
-]
+def _get(row, key):
+    return (row.get(key, "") or "").strip()
 
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
-    """
-    Eight の CSV テキストを読み取り、宛名職人の CSV テキストへ変換して返す。
-    - 出力は ATENA_HEADERS の順序に厳密に合わせる（カラムずれ防止）
-    - 住所分割は converters.address.split_address を使用
-    - ふりがな推定は utils.kana（utils.textnorm 経由の to_katakana_guess）を使用
-    """
     reader = csv.DictReader(io.StringIO(csv_text))
     out_rows = []
 
+    # 可変列（固定以降）で「値が '1' の列名」をメモへ
+    variable_headers = (reader.fieldnames or [])[len(EIGHT_FIXED):]
+
     for row in reader:
-        g = lambda k: (row.get(k, "") or "").strip()
+        company = _get(row, "会社名")
+        dept = _get(row, "部署名")
+        title = _get(row, "役職")
+        last = _get(row, "姓")
+        first = _get(row, "名")
+        email = _get(row, "e-mail")
+        postcode = normalize_postcode(_get(row, "郵便番号"))
+        addr_raw = _get(row, "住所")
+        tel_company = _get(row, "TEL会社")
+        tel_dept = _get(row, "TEL部門")
+        tel_direct = _get(row, "TEL直通")
+        fax = _get(row, "Fax")
+        mobile = _get(row, "携帯電話")
+        url = _get(row, "URL")
 
-        # --- 入力（Eight） ---
-        company     = g("会社名")
-        dept        = g("部署名")
-        title       = g("役職")
-        last        = g("姓")
-        first       = g("名")
-        email       = g("e-mail")
-        postcode    = normalize_postcode(g("郵便番号"))
-        addr_raw    = g("住所")
-        tel_company = g("TEL会社")
-        tel_dept    = g("TEL部門")
-        tel_direct  = g("TEL直通")
-        fax         = g("Fax")
-        mobile      = g("携帯電話")
-        url         = g("URL")
-
-        # --- 住所分割 ---
+        # 住所分割（住所1/住所2 最終的に to_zenkaku 済）
         addr1, addr2 = split_address(addr_raw)
 
-        # --- 電話まとめ（; 連結） ---
+        # 電話：; 連結（会社/部門/直通/FAX/携帯）
         phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
-        # --- 部署の二分割 ---
+        # 部署を2分割
         dept1, dept2 = split_department(dept)
 
-        # --- 姓名とかな ---
-        full_name       = f"{last}{first}"
-        full_name_kana  = ""
-        last_kana       = to_katakana_guess(last)
-        first_kana      = to_katakana_guess(first)
+        # 姓名・かな
+        full_name = f"{last}{first}"
+        last_kana = to_katakana_guess(last)
+        first_kana = to_katakana_guess(first)
+        full_name_kana = ""  # ここは空欄運用（必要なら結合）
 
-        # --- 会社名かな（会社種別除去後に推定） ---
-        company_for_kana = company
-        for t in COMPANY_TYPES:
-            company_for_kana = company_for_kana.replace(t, "")
-        company_kana = to_katakana_guess(company_for_kana)
+        # 会社名かな（株式会社などは事前除去は行わず、そのまま推定）
+        company_kana = to_katakana_guess(company)
 
-        # --- カスタム列: 値が "1" のヘッダ名をメモ1..5 / 溢れは備考1へ ---
+        # メモ系（可変列で値が "1" の列名を順に詰める／超過分は備考1へ）
         memo = ["", "", "", "", ""]
-        biko = ""
-        extra_headers = (reader.fieldnames or [])[len(EIGHT_FIXED):]
-        for hdr in extra_headers:
-            val = (row.get(hdr, "") or "").strip()
-            if val == "1":
+        biko1 = ""
+        for hdr in variable_headers:
+            if (_get(row, hdr) == "1"):
+                # 空いているメモ枠へ
+                placed = False
                 for i in range(5):
                     if not memo[i]:
                         memo[i] = hdr
+                        placed = True
                         break
-                else:
-                    biko += (("\n" if biko else "") + hdr)
+                if not placed:
+                    biko1 += (("\n" if biko1 else "") + hdr)
 
-        # --- 宛名職人 行（ATENA_HEADERS と 1:1） ---
+        # ====== ここから出力配列（61列）を“ヘッダ順”で厳密に構築 ======
         out_row = [
-            # 0-5: 姓/名/かな/姓名
-            last, first,
-            last_kana, first_kana,
-            full_name, full_name_kana,
+            # 1-12: 氏名系
+            last,                        # 1 姓
+            first,                       # 2 名
+            last_kana,                   # 3 姓かな
+            first_kana,                  # 4 名かな
+            full_name,                   # 5 姓名
+            full_name_kana,              # 6 姓名かな
+            "",                          # 7 ミドルネーム
+            "",                          # 8 ミドルネームかな
+            "",                          # 9 敬称
+            "",                          # 10 ニックネーム
+            "",                          # 11 旧姓
+            "",                          # 12 宛先
 
-            # 6-11: ミドル～宛先
-            "", "", "",         # ミドルネーム, ミドルネームかな, 敬称
-            "", "", "",         # ニックネーム, 旧姓, 宛先
-
-            # 12-20: 自宅系（未使用）
-            "", "", "", "", "",            # 自宅〒, 自宅住所1..3, 自宅電話
-            "", "", "", "",                # 自宅IM ID, 自宅E-mail, 自宅URL, 自宅Social
-
-            # 21-29: 会社系
-            postcode, addr1, addr2, "",    # 会社〒, 会社住所1, 会社住所2, 会社住所3
-            phone_join, "", email,         # 会社電話, 会社IM ID, 会社E-mail
-            url, "",                       # 会社URL, 会社Social
-
-            # 30-38: その他系（**9列必須**）
+            # 13-21: 自宅系（未使用）
             "", "", "", "", "", "", "", "",
 
-            # 39-43: 会社名かな/会社名/部署/役職
-            company_kana, company,         # 会社名かな, 会社名
-            dept1, dept2,                  # 部署名1, 部署名2
-            title,                         # 役職名
+            # 22-30: 会社系（郵便/住所/電話/URLなど）
+            postcode,                    # 22 会社〒
+            addr1,                       # 23 会社住所1
+            addr2,                       # 24 会社住所2
+            "",                          # 25 会社住所3
+            phone_join,                  # 26 会社電話
+            "",                          # 27 会社IM ID
+            email,                       # 28 会社E-mail
+            url,                         # 29 会社URL
+            "",                          # 30 会社Social
 
-            # 44-47: 連名系（未使用）
+            # 31-39: その他系（未使用）
+            "", "", "", "", "", "", "", "",
+
+            # 40-44: 会社名かな/会社名/部署/役職
+            company_kana,                # 40 会社名かな
+            company,                     # 41 会社名
+            to_zenkaku(dept1),           # 42 部署名1
+            to_zenkaku(dept2),           # 43 部署名2
+            to_zenkaku(title),           # 44 役職名
+
+            # 45-48: 連名系（未使用）
             "", "", "", "",
 
-            # 48-52: メモ1..5
+            # 49-53: メモ1..5
             memo[0], memo[1], memo[2], memo[3], memo[4],
 
-            # 53-55: 備考1..3
-            biko, "", "",
+            # 54-56: 備考1..3
+            biko1, "", "",
 
-            # 56-60: 誕生日/性別/血液型/趣味/性格（**5列**）
-            "", "", "", "", "",
+            # 57-61: 誕生日/性別/血液型/趣味/性格
+            "", "", "", "",  # 57-60
+            "",              # 61
         ]
 
-        # --- 安全策：ヘッダ長にパディング/切り詰め ---
-        diff = len(ATENA_HEADERS) - len(out_row)
-        if diff > 0:
-            out_row.extend([""] * diff)
-        elif diff < 0:
-            out_row = out_row[:len(ATENA_HEADERS)]
+        # 最終安全チェック：列数がヘッダと一致しない場合はエラー
+        if len(out_row) != len(ATENA_HEADERS):
+            raise ValueError(f"出力列数がヘッダと不一致: row={len(out_row)} headers={len(ATENA_HEADERS)}")
 
         out_rows.append(out_row)
 
-    # --- 書き出し ---
+    # CSV化
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(ATENA_HEADERS)
