@@ -6,7 +6,7 @@
 # - 住所分割は converters.address.split_address を使用
 # - ふりがな推定は utils.kana.to_katakana_guess（存在すれば利用）
 #
-# v2.12
+# v2.13
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from utils.textnorm import (
 )
 from utils.kana import to_katakana_guess
 
-__version__ = "v2.12"
+__version__ = "v2.13"
 
 # 宛名職人ヘッダ（61列：この順で出力）
 ATENA_HEADERS: List[str] = [
@@ -63,7 +63,6 @@ def _company_kana_guess(company_name: str) -> str:
     ※ 元の company_name は絶対に改変しない（列ズレや空化を防ぐ）
     """
     base = company_name or ""
-    # 除去は kana 推定用の一時文字列に対してのみ
     for t in COMPANY_TYPES:
         base = base.replace(t, "")
     return to_katakana_guess(base)
@@ -96,7 +95,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
 
         # --- 入力の取得（生値は保持しておく） ---
         raw_company = g("会社名")
-        company     = raw_company  # ← 元値のコピー。加工は別変数で行い、company 自体は壊さない
+        company     = raw_company  # ← 元値コピー。加工は別変数で行い、company 自体は壊さない
         dept        = g("部署名")
         title       = g("役職")
         last        = g("姓")
@@ -152,25 +151,32 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             full_name, full_name_kana,       # 姓名, 姓名かな
             "", "", "",                      # ミドル, ミドルかな, 敬称
             "", "", "",                      # ニック, 旧姓, 宛先
+
             # 13..21 自宅系（未使用）
             "", "", "", "", "",              # 自宅〒, 自宅住所1, 自宅住所2, 自宅住所3, 自宅電話
             "", "", "", "",                  # 自宅IM, 自宅E-mail, 自宅URL, 自宅Social
-            # 22..30 会社系 1
+
+            # 22..30 会社系
             postcode, addr1, addr2, "",      # 会社〒, 会社住所1, 会社住所2, 会社住所3
             phone_join, "", email,           # 会社電話, 会社IM, 会社E-mail
             url, "",                         # 会社URL, 会社Social
+
             # 31..39 その他（未使用）
             "", "", "", "", "", "", "", "",  # その他〒, その他住所1..3, その他電話, その他IM, その他E, その他URL, その他Social
+
             # 40..48 会社名／部署／役職／連名
             company_kana, company,           # 会社名かな, 会社名
             dept1, dept2,                    # 部署名1, 部署名2
             title,                           # 役職名
             "", "", "", "",                  # 連名, 連名ふりがな, 連名敬称, 連名誕生日
+
             # 49..56 メモ／備考
             memo[0], memo[1], memo[2], memo[3], memo[4],
             biko, "", "",                    # 備考1, 備考2, 備考3
+
             # 57..61 個人属性（未使用）
-            "", "", "", ""                   # 誕生日, 性別, 血液型, 趣味, 性格
+            "", "", "", "",                  # 誕生日, 性別, 血液型, 趣味
+            ""                                # 性格  ← ★これが抜けていたため 59/61 になっていました
         ]
 
         # 最終ガード：列数が 61 であること
