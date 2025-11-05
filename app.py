@@ -1,25 +1,27 @@
 # app.py
 # Eight → 宛名職人 変換 最小版 v1.6
-# 単一ファイルのHTTPエントリ。POST /convert でCSVを返すだけの薄い層。
+# 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
+import csv
+import re
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort
 
-# 変換本体をservicesから読み込む
-from services.eight_to_atena import (
-    convert_eight_csv_text_to_atena_csv_text,
-    __version__ as CONVERTER_VERSION,
-)
+# 今回の変更点:
+# - VERSION を v1.6 に更新
+# - 変換関数は services.eight_to_atena から直接 import
+from services.eight_to_atena import convert_eight_csv_text_to_atena_csv_text
 
-APP_VERSION = "v1.6"
+VERSION = "v1.6"
 
+# ====== Web: 超簡易UI（Jinja文字列） ======
 INDEX_HTML = """
 <!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8"/>
-  <title>Eight → 宛名職人 変換 ({{app_version}} / converter {{conv_version}})</title>
+  <title>Eight → 宛名職人 変換 ({{version}})</title>
   <style>
     body { font-family: system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans JP", sans-serif; padding: 24px; }
     .card { max-width: 720px; margin: 0 auto; padding: 24px; border: 1px solid #ddd; border-radius: 12px; }
@@ -32,9 +34,7 @@ INDEX_HTML = """
 </head>
 <body>
   <div class="card">
-    <h1>Eight → 宛名職人 変換
-      <span class="ver">(app {{app_version}} / converter {{conv_version}})</span>
-    </h1>
+    <h1>Eight → 宛名職人 変換 <span class="ver">({{version}})</span></h1>
     <form method="post" action="/convert" enctype="multipart/form-data">
       <input type="file" name="file" accept=".csv" required />
       <div class="muted">UTF-8 / カンマ区切りの Eight CSV を選択してください。</div>
@@ -49,7 +49,7 @@ app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
 def index():
-    return render_template_string(INDEX_HTML, app_version=APP_VERSION, conv_version=CONVERTER_VERSION)
+    return render_template_string(INDEX_HTML, version=VERSION)
 
 @app.route("/convert", methods=["POST"])
 def convert():
@@ -84,5 +84,4 @@ def healthz():
     return "ok", 200
 
 if __name__ == "__main__":
-    # RenderやGunicorn運用前提。本ローカル実行は補助的。
     app.run(host="0.0.0.0", port=8000, debug=False)
