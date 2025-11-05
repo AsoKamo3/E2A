@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.8
+# Eight → 宛名職人 変換 最小版 v1.9
 # 単一ファイル。POST /convert で直接 CSV を返します。
 
 import io
@@ -8,7 +8,7 @@ from flask import Flask, request, render_template_string, send_file, abort
 
 from services.eight_to_atena import convert_eight_csv_text_to_atena_csv_text, __version__ as CONVERTER_VERSION
 
-VERSION = "v1.8"
+VERSION = "v1.9"
 
 # ====== Web: 超簡易UI（Jinja文字列） ======
 INDEX_HTML = """
@@ -40,7 +40,6 @@ INDEX_HTML = """
 </html>
 """
 
-from flask import Flask
 app = Flask(__name__)
 
 @app.route("/", methods=["GET"])
