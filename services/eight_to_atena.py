@@ -6,8 +6,9 @@
 #   v1.1: convert_eight_csv_text_to_atena_csv_text を本モジュールで唯一実装
 #   v1.2: （一時）ヘッダ末尾の「性格」を削除した版
 #   v1.3: ヘッダ末尾「性格」を復帰し、"その他" ブロックを厳密に9列出力（列ずれ修正）
+#   v1.4: 末尾の5列を確実に出力 + ヘッダ長へのパディング安全策を追加（row=60 headers=61対策）
 
-__version__ = "v1.3"
+__version__ = "v1.4"
 
 import io
 import csv
@@ -116,7 +117,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
                 else:
                     biko += (("\n" if biko else "") + hdr)
 
-        # --- 宛名職人 行（ATENA_HEADERS と 1:1・列数チェック付き） ---
+        # --- 宛名職人 行（ATENA_HEADERS と 1:1） ---
         out_row = [
             # 0-5: 姓/名/かな/姓名
             last, first,
@@ -137,7 +138,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             url, "",                       # 会社URL, 会社Social
 
             # 30-38: その他系（**9列必須**）
-            "", "", "", "", "", "", "", "",  # ← ここが9列（不足すると以降が1つ右へずれる）
+            "", "", "", "", "", "", "", "",
 
             # 39-43: 会社名かな/会社名/部署/役職
             company_kana, company,         # 会社名かな, 会社名
@@ -153,15 +154,16 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             # 53-55: 備考1..3
             biko, "", "",
 
-            # 56-61: 誕生日/性別/血液型/趣味/性格（ヘッダ末尾まで）
-            "", "", "", "", "",  # ← 「性格」まで
+            # 56-60: 誕生日/性別/血液型/趣味/性格（**5列**）
+            "", "", "", "", "",
         ]
 
-        # 安全チェック（ヘッダと列数が一致しない場合は例外）
-        if len(out_row) != len(ATENA_HEADERS):
-            raise RuntimeError(
-                f"出力列数がヘッダと不一致: row={len(out_row)} headers={len(ATENA_HEADERS)}"
-            )
+        # --- 安全策：ヘッダ長にパディング/切り詰め ---
+        diff = len(ATENA_HEADERS) - len(out_row)
+        if diff > 0:
+            out_row.extend([""] * diff)
+        elif diff < 0:
+            out_row = out_row[:len(ATENA_HEADERS)]
 
         out_rows.append(out_row)
 
