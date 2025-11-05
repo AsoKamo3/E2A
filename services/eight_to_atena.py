@@ -1,12 +1,11 @@
 # services/eight_to_atena.py
 # Eight CSV → 宛名職人CSV 変換本体（I/Oと行マッピング）
-# - 会社名が空になってしまうケースへの多重保険（raw_company を保持して最終復元）
 # - 列の並びは ATENA_HEADERS と厳密一致（61列）
 # - 部署名の 2 分割（utils.textnorm.split_department）
 # - 住所分割は converters.address.split_address を使用
 # - ふりがな推定は utils.kana.to_katakana_guess（存在すれば利用）
 #
-# v2.13
+# v2.14 : 「その他ブロック（31..39）」の列不足(1)を補い、最終 61 列を厳密化
 
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ from utils.textnorm import (
 )
 from utils.kana import to_katakana_guess
 
-__version__ = "v2.13"
+__version__ = "v2.14"
 
 # 宛名職人ヘッダ（61列：この順で出力）
 ATENA_HEADERS: List[str] = [
@@ -58,10 +57,7 @@ COMPANY_TYPES = [
 
 
 def _company_kana_guess(company_name: str) -> str:
-    """
-    会社名かなの推定。会社種別の語を取り除いた上で to_katakana_guess を適用。
-    ※ 元の company_name は絶対に改変しない（列ズレや空化を防ぐ）
-    """
+    """会社名かなの推定。会社種別の語を取り除いた上で to_katakana_guess を適用。"""
     base = company_name or ""
     for t in COMPANY_TYPES:
         base = base.replace(t, "")
@@ -69,10 +65,7 @@ def _company_kana_guess(company_name: str) -> str:
 
 
 def _iter_extra_flags(fieldnames: List[str], row: dict) -> List[str]:
-    """
-    Eight 固定カラム以降の「フラグ列」（値が '1' のヘッダ名）を収集。
-    先頭から最大5件をメモ1..5、それ以降は備考1に改行区切りで入れる想定で利用。
-    """
+    """Eight 固定カラム以降で値が '1' のヘッダ名を収集。"""
     flags = []
     tail_headers = fieldnames[len(EIGHT_FIXED):] if fieldnames else []
     for hdr in tail_headers:
@@ -93,9 +86,9 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     for row in reader:
         g = lambda k: (row.get(k, "") or "").strip()
 
-        # --- 入力の取得（生値は保持しておく） ---
-        raw_company = g("会社名")
-        company     = raw_company  # ← 元値コピー。加工は別変数で行い、company 自体は壊さない
+        # --- 入力の取得 ---
+        company_raw = g("会社名")
+        company     = company_raw
         dept        = g("部署名")
         title       = g("役職")
         last        = g("姓")
@@ -117,23 +110,23 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
         # --- 部署 2分割 ---
+        from utils.textnorm import split_department  # 明示importでもOK
         dept1, dept2 = split_department(dept)
 
-        # --- 姓名・かな（かなは未実装でもOK：空許容） ---
+        # --- 姓名・かな ---
         full_name = f"{last}{first}"
         last_kana = to_katakana_guess(last)
         first_kana = to_katakana_guess(first)
         full_name_kana = ""  # 姓名かなは未実装のまま
 
-        # --- 会社名かな（※元の会社名を壊さず、推定専用に加工） ---
+        # --- 会社名かな ---
         company_kana = _company_kana_guess(company)
 
-        # --- 会社名の最終保険（空や空白のみなら raw_company で復元） ---
-        if not (company or "").strip():
-            company = raw_company
-        company = company.strip()
+        # --- 空防止 ---
+        if not company.strip():
+            company = company_raw.strip()
 
-        # --- カスタムフラグ → メモ/備考 ---
+        # --- メモ/備考 ---
         flags = _iter_extra_flags(reader.fieldnames or [], row)
         memo = ["", "", "", "", ""]
         biko = ""
@@ -143,43 +136,41 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             else:
                 biko += (("\n" if biko else "") + hdr)
 
-        # === 列並びに合わせて out_row を厳密構築（61列） ===
+        # === ここから 61 列を厳密に並べる ===
         out_row: List[str] = [
             # 1..12
-            last, first,                     # 姓, 名
-            last_kana, first_kana,           # 姓かな, 名かな
-            full_name, full_name_kana,       # 姓名, 姓名かな
-            "", "", "",                      # ミドル, ミドルかな, 敬称
-            "", "", "",                      # ニック, 旧姓, 宛先
+            last, first,
+            last_kana, first_kana,
+            full_name, full_name_kana,
+            "", "", "",
+            "", "", "",
 
-            # 13..21 自宅系（未使用）
-            "", "", "", "", "",              # 自宅〒, 自宅住所1, 自宅住所2, 自宅住所3, 自宅電話
-            "", "", "", "",                  # 自宅IM, 自宅E-mail, 自宅URL, 自宅Social
+            # 13..21 自宅
+            "", "", "", "", "",
+            "", "", "", "",
 
-            # 22..30 会社系
-            postcode, addr1, addr2, "",      # 会社〒, 会社住所1, 会社住所2, 会社住所3
-            phone_join, "", email,           # 会社電話, 会社IM, 会社E-mail
-            url, "",                         # 会社URL, 会社Social
+            # 22..30 会社
+            postcode, addr1, addr2, "",
+            phone_join, "", email,
+            url, "",
 
-            # 31..39 その他（未使用）
-            "", "", "", "", "", "", "", "",  # その他〒, その他住所1..3, その他電話, その他IM, その他E, その他URL, その他Social
+            # 31..39 その他（★9列そろえる：〒,住所1,住所2,住所3,電話,IM,E,URL,Social）
+            "", "", "", "", "", "", "", "",
 
-            # 40..48 会社名／部署／役職／連名
-            company_kana, company,           # 会社名かな, 会社名
-            dept1, dept2,                    # 部署名1, 部署名2
-            title,                           # 役職名
-            "", "", "", "",                  # 連名, 連名ふりがな, 連名敬称, 連名誕生日
+            # 40..48 会社名/部署/役職/連名
+            company_kana, company,
+            dept1, dept2,
+            title,
+            "", "", "", "",
 
-            # 49..56 メモ／備考
+            # 49..56 メモ/備考
             memo[0], memo[1], memo[2], memo[3], memo[4],
-            biko, "", "",                    # 備考1, 備考2, 備考3
+            biko, "", "",
 
-            # 57..61 個人属性（未使用）
-            "", "", "", "",                  # 誕生日, 性別, 血液型, 趣味
-            ""                                # 性格  ← ★これが抜けていたため 59/61 になっていました
+            # 57..61 個人属性
+            "", "", "", "", ""
         ]
 
-        # 最終ガード：列数が 61 であること
         if len(out_row) != len(ATENA_HEADERS):
             raise ValueError(f"出力列数がヘッダと不一致: row={len(out_row)} headers={len(ATENA_HEADERS)}")
 
