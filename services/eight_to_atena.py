@@ -9,11 +9,11 @@ from utils.textnorm import (
     to_zenkaku,
     normalize_postcode,
     normalize_phone,
-    split_department,          # ← ここが今回のポイント（必ずこの関数を使う）
+    split_department,
 )
 from utils.kana import to_katakana_guess
 
-__version__ = "v2.7"  # ← バージョンをひとつ上げました（部署分割の安定化）
+__version__ = "v2.8"  # ← カラムずれ修正（その他系=9列、末尾5列を明示）
 
 # 宛名職人のヘッダ
 ATENA_HEADERS = [
@@ -83,7 +83,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         # 電話連結（; で結ぶ）
         phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
-        # 部署 2 分割（← 今回の修正点が効く）
+        # 部署 2 分割
         dept1, dept2 = split_department(dept)
 
         # 姓名
@@ -107,26 +107,28 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
                 else:
                     biko += (("\n" if biko else "") + hdr)
 
-        # 宛名職人の列順に合わせて厳密に並べる（※順番厳守）
+        # 宛名職人の列順に合わせて厳密に並べる（列数=ヘッダ数=61）
         out_row = [
             last, first,                   # 姓, 名
             last_kana, first_kana,         # 姓かな, 名かな
             full_name, full_name_kana,     # 姓名, 姓名かな
             "", "", "",                    # ミドル/敬称
             "", "", "",                    # ニック/旧姓/宛先
-            "", "", "", "", "",            # 自宅系 未使用
-            "", "", "", "",                # 自宅続き
+            "", "", "", "", "",            # 自宅〒, 自宅住所1, 自宅住所2, 自宅住所3, 自宅電話
+            "", "", "", "",                # 自宅IM ID, 自宅E-mail, 自宅URL, 自宅Social
             postcode, addr1, addr2, "",    # 会社〒, 会社住所1, 会社住所2, 会社住所3
-            phone_join, "", email,         # 会社電話, 会社IM, 会社E-mail
+            phone_join, "", email,         # 会社電話, 会社IM ID, 会社E-mail
             url, "",                       # 会社URL, 会社Social
-            "", "", "", "", "", "", "", "",# その他*
+            # ↓↓↓ ここは必ず 9 列（その他〒～その他Social）
+            "", "", "", "", "", "", "", "",  # その他〒, その他住所1, その他住所2, その他住所3, その他電話, その他IM ID, その他E-mail, その他URL, その他Social
             company_kana, company,         # 会社名かな, 会社名
-            dept1, dept2,                  # 部署名1, 部署名2（←ここが重要）
+            dept1, dept2,                  # 部署名1, 部署名2
             title,                         # 役職名
-            "", "", "", "",                # 連名*
+            "", "", "", "",                # 連名, 連名ふりがな, 連名敬称, 連名誕生日
             memo[0], memo[1], memo[2], memo[3], memo[4],   # メモ1..5
             biko, "", "",                  # 備考1..3
-            "", "", "", ""                 # 誕生日, 性別, 血液型, 趣味, 性格
+            # ↓↓↓ 末尾は必ず 5 列（誕生日, 性別, 血液型, 趣味, 性格）
+            "", "", "", "",                # 誕生日, 性別, 血液型, 趣味, 性格
         ]
         rows_out.append(out_row)
 
