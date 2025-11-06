@@ -1,8 +1,9 @@
 # app.py
-# Eight → 宛名職人 変換 v1.11
+# Eight → 宛名職人 変換 v1.12
 # - トップページと /healthz に app / converter / address / textnorm / kana / bldg_dict_version を表示
 
 import io
+import os
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
@@ -11,7 +12,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.11"
+VERSION = "v1.12"
 
 INDEX_HTML = """
 <!doctype html>
@@ -128,4 +129,7 @@ def healthz():
     ), 200
 
 if __name__ == "__main__":
-    app.run(host="
+    # Render では gunicorn 起動なので通常ここは実行されませんが、
+    # ファイルの「構文」は常に正しく保つ必要があります。
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", "8000")), debug=False)
+    
