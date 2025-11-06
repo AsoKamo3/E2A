@@ -8,12 +8,13 @@ import re
 import unicodedata
 from typing import List, Any
 
-__version__ = "v1.8"
+__version__ = "v1.9"
 __meta__ = {
     "features": [
         "to_zenkaku (NFKC)",
         "to_zenkaku_wide (ASCII→全角：数字/英字/記号/スペース)",
         "normalize_block_notation",
+        "normalize_postcode (半角7桁・ハイフン無し／不正は空)",
         "load_bldg_words (array or {version,words})",
         "bldg_words_version()",
     ],
@@ -22,7 +23,7 @@ __meta__ = {
 # 内部にロードした辞書版を保持（配列JSONの場合は None）
 _BLDG_VERSION: str | None = None
 
-# --- NFKC 全角化（互換：以前からの関数。ASCIIは半角のままになる点に注意） ---
+# --- NFKC 全角化（ASCIIは半角のまま残る点に注意） ---
 def to_zenkaku(s: str) -> str:
     if s is None:
         return ""
@@ -46,6 +47,18 @@ def to_zenkaku_wide(s: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+# --- 郵便番号（半角7桁・ハイフン無し。不正は空） ---
+def normalize_postcode(s: str) -> str:
+    """
+    郵便番号を半角7桁・ハイフン無しに正規化。
+    7桁にできない場合は空文字を返す。
+    """
+    if not s:
+        return ""
+    x = to_zenkaku(s)
+    digits = "".join(ch for ch in x if ch.isdigit())
+    return digits if len(digits) == 7 else ""
 
 # --- 丁目/番地/番/号/「の」 → ハイフン寄せ ---
 _DEF_REPLACERS = [
