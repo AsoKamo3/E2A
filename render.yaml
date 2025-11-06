@@ -2,8 +2,7 @@ services:
   - type: web
     name: e2a
     env: python
-    rootDir: ./E2A            # ← リポジトリ内のサービスの実ディレクトリ
-    pythonVersion: 3.12.6     # ← これで 3.12 系を強制
+    rootDir: ./E2A
     buildCommand: |
       pip install --upgrade pip wheel
       pip install -r requirements.txt
@@ -12,5 +11,7 @@ services:
       --workers 3 --threads 2 --timeout 180
       --access-logfile - --error-logfile -
     envVars:
+      - key: PYTHON_VERSION     # ← これを追加
+        value: "3.12.6"
       - key: FURIGANA_ENABLED
         value: "1"
