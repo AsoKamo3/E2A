@@ -1,11 +1,12 @@
 # app.py
-# Eight → 宛名職人 変換 v1.15
-# - トップ/healthz に app / converter / address / textnorm / kana / building_dict / areacode_dict
-#   に加えて furigana_engine / furigana_detail を表示
+# Eight → 宛名職人 変換 v1.16
+# - / と /healthz に app / converter / address / textnorm / kana / building_dict / areacode_dict
+#   ＋ furigana_engine / furigana_detail / python / sys.executable / pykakasi の find_spec 結果などを表示
 
 import io
 import os
 import sys
+import importlib.util
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
@@ -14,7 +15,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.15"
+VERSION = "v1.16"
 
 INDEX_HTML = """
 <!doctype html>
@@ -52,6 +53,9 @@ INDEX_HTML = """
       <div><strong>Building Dict:</strong> <code>{{bldg_dict_ver or "N/A"}}</code></div>
       <div><strong>Areacode Dict:</strong> <code>{{areacode_ver or "N/A"}}</code></div>
       <div><strong>Python:</strong> <code>{{python_ver}}</code></div>
+      <div><strong>Executable:</strong> <code>{{python_exec}}</code></div>
+      <div><strong>pykakasi_spec:</strong> <code>{{pykakasi_spec}}</code></div>
+      <div><strong>pykakasi_version:</strong> <code>{{pykakasi_version}}</code></div>
     </div>
     <div class="muted" style="margin-top:8px;">※ 現在稼働中のモジュール/辞書/エンジンの状態です。</div>
   </div>
@@ -62,7 +66,7 @@ INDEX_HTML = """
 app = Flask(__name__)
 
 def _module_versions():
-    """各モジュール/辞書/エンジンのバージョンを安全に取得"""
+    """各モジュール/辞書/エンジンのバージョンと pykakasi の在/不在情報を安全に取得"""
     try:
         from converters.address import __version__ as ADDR_VER
     except Exception:
@@ -86,23 +90,48 @@ def _module_versions():
         from utils.jp_area_codes import __version__ as AREACODE_VER
     except Exception:
         AREACODE_VER = None
-    return ADDR_VER, TXN_VER, KANA_VER, KANA_ENGINE, KANA_DETAIL, BLDG_VER, AREACODE_VER
+
+    # pykakasi の import 実在チェック
+    spec = importlib.util.find_spec("pykakasi")
+    pykakasi_spec = bool(spec)
+    pykakasi_version = None
+    if spec:
+        try:
+            import pykakasi  # type: ignore
+            pykakasi_version = getattr(pykakasi, "__version__", "unknown")
+        except Exception:
+            pykakasi_version = "import-error"
+
+    return {
+        "ADDR_VER": ADDR_VER,
+        "TXN_VER": TXN_VER,
+        "KANA_VER": KANA_VER,
+        "KANA_ENGINE": KANA_ENGINE,
+        "KANA_DETAIL": KANA_DETAIL,
+        "BLDG_VER": BLDG_VER,
+        "AREACODE_VER": AREACODE_VER,
+        "PYKAKASI_SPEC": pykakasi_spec,
+        "PYKAKASI_VER": pykakasi_version,
+    }
 
 @app.route("/", methods=["GET"])
 def index():
-    addr_ver, txn_ver, kana_ver, furigana_engine, furigana_detail, bldg_dict_ver, areacode_ver = _module_versions()
+    mv = _module_versions()
     return render_template_string(
         INDEX_HTML,
         version=VERSION,
         conv=CONVERTER_VERSION,
-        addr_ver=addr_ver,
-        txn_ver=txn_ver,
-        kana_ver=kana_ver,
-        furigana_engine=furigana_engine,
-        furigana_detail=furigana_detail,
-        bldg_dict_ver=bldg_dict_ver,
-        areacode_ver=areacode_ver,
+        addr_ver=mv["ADDR_VER"],
+        txn_ver=mv["TXN_VER"],
+        kana_ver=mv["KANA_VER"],
+        furigana_engine=mv["KANA_ENGINE"],
+        furigana_detail=mv["KANA_DETAIL"],
+        bldg_dict_ver=mv["BLDG_VER"],
+        areacode_ver=mv["AREACODE_VER"],
         python_ver=sys.version.split()[0],
+        python_exec=sys.executable,
+        pykakasi_spec=mv["PYKAKASI_SPEC"],
+        pykakasi_version=mv["PYKAKASI_VER"],
     )
 
 @app.route("/convert", methods=["POST"])
@@ -136,19 +165,24 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    addr_ver, txn_ver, kana_ver, furigana_engine, furigana_detail, bldg_dict_ver, areacode_ver = _module_versions()
+    mv = _module_versions()
     return jsonify(
         ok=True,
         app=VERSION,
         converter=CONVERTER_VERSION,
-        address=addr_ver,
-        textnorm=txn_ver,
-        kana=kana_ver,
-        furigana_engine=furigana_engine,
-        furigana_detail=furigana_detail,
-        building_dict=bldg_dict_ver,
-        areacode_dict=areacode_ver,
+        address=mv["ADDR_VER"],
+        textnorm=mv["TXN_VER"],
+        kana=mv["KANA_VER"],
+        furigana_engine=mv["KANA_ENGINE"],
+        furigana_detail=mv["KANA_DETAIL"],
+        building_dict=mv["BLDG_VER"],
+        areacode_dict=mv["AREACODE_VER"],
         python=sys.version.split()[0],
+        executable=sys.executable,
+        pykakasi_spec=mv["PYKAKASI_SPEC"],
+        pykakasi_version=mv["PYKAKASI_VER"],
+        sys_path=sys.path[:6],  # 最初の数個だけ表示
+        env_FURIGANA_ENABLED=os.environ.get("FURIGANA_ENABLED"),
     ), 200
 
 if __name__ == "__main__":
