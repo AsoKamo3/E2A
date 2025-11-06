@@ -6,12 +6,13 @@ import json
 import os
 import re
 import unicodedata
-from typing import List, Tuple, Any, Dict
+from typing import List, Any
 
-__version__ = "v1.7"
+__version__ = "v1.8"
 __meta__ = {
     "features": [
-        "to_zenkaku",
+        "to_zenkaku (NFKC)",
+        "to_zenkaku_wide (ASCII→全角：数字/英字/記号/スペース)",
         "normalize_block_notation",
         "load_bldg_words (array or {version,words})",
         "bldg_words_version()",
@@ -21,11 +22,30 @@ __meta__ = {
 # 内部にロードした辞書版を保持（配列JSONの場合は None）
 _BLDG_VERSION: str | None = None
 
-# --- NFKC 全角化 ---
+# --- NFKC 全角化（互換：以前からの関数。ASCIIは半角のままになる点に注意） ---
 def to_zenkaku(s: str) -> str:
     if s is None:
         return ""
     return unicodedata.normalize("NFKC", s)
+
+# --- ASCII → 全角（数字・英字・記号・スペースをすべて全角に） ---
+def to_zenkaku_wide(s: str) -> str:
+    """
+    ASCII (0x21-0x7E) を全角に、半角スペース(0x20)は全角スペース(U+3000)に変換。
+    他の文字はそのまま。
+    """
+    if not s:
+        return ""
+    out = []
+    for ch in s:
+        oc = ord(ch)
+        if ch == " ":
+            out.append("\u3000")  # 全角スペース
+        elif 0x21 <= oc <= 0x7E:
+            out.append(chr(oc + 0xFEE0))  # 全角化（！〜～）
+        else:
+            out.append(ch)
+    return "".join(out)
 
 # --- 丁目/番地/番/号/「の」 → ハイフン寄せ ---
 _DEF_REPLACERS = [
@@ -53,6 +73,7 @@ def normalize_block_notation(s: str) -> str:
         x = re.sub(pat, rep, x)
     return x
 
+# --- 建物語辞書ロード ---
 def _candidate_paths(path: str | None) -> list[str]:
     c: list[str] = []
     if path:
