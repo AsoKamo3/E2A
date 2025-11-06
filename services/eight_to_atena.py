@@ -1,30 +1,25 @@
 # services/eight_to_atena.py
-# Eight CSV → 宛名職人CSV 変換本体（I/Oと行マッピング）
-# - 列の並びは ATENA_HEADERS と厳密一致（61列）
-# - 部署名の 2 分割（utils.textnorm.split_department）
-# - 住所分割は converters.address.split_address を使用
-# - ふりがな推定は utils.kana.to_katakana_guess（存在すれば利用）
-#
-# v2.14 : 「その他ブロック（31..39）」の列不足(1)を補い、最終 61 列を厳密化
-
+# Eight CSV/TSV → 宛名職人CSV 変換本体
+# - 列順は ATENA_HEADERS と厳密一致（61列）
+# - 住所分割は converters.address.split_address に委譲（分割できなければ (原文, "")）
+# - 部署は区切り文字でトークン化し、前半(ceil(n/2))を部署名1、後半を部署名2（全角スペース結合）
+# - 姓かな/名かな/姓名かなは現段階では付与しない（空）
+# - 電話は「;」連結（スラッシュは置換）
+# - CSVのヘッダ・キーは BOM(U+FEFF) と前後空白を除去してから参照
+# - 区切りは csv.Sniffer で自動判定（カンマ/タブ両対応）
 from __future__ import annotations
 
 import io
 import csv
+import unicodedata
+import math
+import re
 from typing import List
 
 from converters.address import split_address
-from utils.textnorm import (
-    to_zenkaku,
-    normalize_postcode,
-    normalize_phone,
-    split_department,
-)
-from utils.kana import to_katakana_guess
 
-__version__ = "v2.14"
+__version__ = "v2.19"
 
-# 宛名職人ヘッダ（61列：この順で出力）
 ATENA_HEADERS: List[str] = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
     "ニックネーム","旧姓","宛先","自宅〒","自宅住所1","自宅住所2","自宅住所3","自宅電話",
@@ -45,56 +40,78 @@ EIGHT_FIXED = [
     "TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
 ]
 
-# 会社種別（かな推定時の「除去」対象。元の会社名そのものは絶対に書き換えない）
-COMPANY_TYPES = [
-    "株式会社","有限会社","合同会社","合資会社","合名会社","相互会社","清算株式会社",
-    "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
-    "特定非営利活動法人","ＮＰＯ法人","中間法人","有限責任中間法人","特例民法法人",
-    "学校法人","医療法人","医療法人社団","医療法人財団","宗教法人","社会福祉法人",
-    "国立大学法人","公立大学法人","独立行政法人","地方独立行政法人","特殊法人",
-    "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託"
-]
+def _clean_key(k: str) -> str:
+    return (k or "").lstrip("\ufeff").strip()
 
+def _clean_row(row: dict) -> dict:
+    return {_clean_key(k): (v or "") for k, v in row.items()}
 
-def _company_kana_guess(company_name: str) -> str:
-    """会社名かなの推定。会社種別の語を取り除いた上で to_katakana_guess を適用。"""
-    base = company_name or ""
-    for t in COMPANY_TYPES:
-        base = base.replace(t, "")
-    return to_katakana_guess(base)
+def _to_zenkaku(s: str) -> str:
+    if not s:
+        return s
+    return unicodedata.normalize("NFKC", s)
 
+# 区切り集合：／ / ・ ， 、 ｜ | 半角/全角スペース
+SEP_PATTERN = re.compile(r'(?:／|/|・|,|、|｜|\||\s)+')
 
-def _iter_extra_flags(fieldnames: List[str], row: dict) -> List[str]:
-    """Eight 固定カラム以降で値が '1' のヘッダ名を収集。"""
-    flags = []
-    tail_headers = fieldnames[len(EIGHT_FIXED):] if fieldnames else []
-    for hdr in tail_headers:
-        val = (row.get(hdr, "") or "").strip()
-        if val == "1":
-            flags.append(hdr)
-    return flags
+def _split_department_half(s: str) -> tuple[str, str]:
+    """
+    部署名をトークン化 → 前半（ceil(n/2)）を部署名1、後半を部署名2。
+    結合は全角スペース。
+    """
+    s = (s or "").strip()
+    if not s:
+        return "", ""
+    tokens = [t for t in SEP_PATTERN.split(s) if t]
+    if len(tokens) <= 1:
+        return _to_zenkaku(s), ""
+    n = len(tokens)
+    k = math.ceil(n / 2.0)  # 前半のサイズ
+    left = "　".join(tokens[:k])
+    right = "　".join(tokens[k:]) if k < n else ""
+    return _to_zenkaku(left), _to_zenkaku(right)
 
+def _normalize_postcode(z: str) -> str:
+    return (z or "").replace("-", "").strip()
+
+def _normalize_phone(*nums: str) -> str:
+    parts = [p.strip() for p in nums if p and p.strip()]
+    joined = ";".join(parts)
+    # 念のためスラッシュ区切りを矯正
+    return joined.replace(" / ", ";").replace("/", ";")
 
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     """
-    Eight CSV（UTF-8, カンマ区切り, 1行目ヘッダ）→ 宛名職人 CSV テキスト
-    - 出力には ATENA_HEADERS（61列）を必ず含む
+    Eight のCSV/TSVテキスト → 宛名職人CSVテキスト（61列）
+    - 区切りは Sniffer で自動判定（カンマ/タブ）
     """
-    reader = csv.DictReader(io.StringIO(csv_text))
+    buf = io.StringIO(csv_text)
+    sample = buf.read(4096)
+    buf.seek(0)
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=[",", "\t"])
+    except Exception:
+        # フォールバックはカンマ
+        class _D: delimiter = ","
+        dialect = _D()
+    reader = csv.DictReader(buf, dialect=dialect)
+    # ヘッダ正規化
+    reader.fieldnames = [_clean_key(h) for h in (reader.fieldnames or [])]
+
     rows_out: List[List[str]] = []
 
-    for row in reader:
-        g = lambda k: (row.get(k, "") or "").strip()
+    for raw in reader:
+        row = _clean_row(raw)
+        g = lambda k: (row.get(_clean_key(k), "") or "").strip()
 
-        # --- 入力の取得 ---
+        # 入力
         company_raw = g("会社名")
-        company     = company_raw
-        dept        = g("部署名")
-        title       = g("役職")
+        dept_raw    = g("部署名")
+        title_raw   = g("役職")
         last        = g("姓")
         first       = g("名")
         email       = g("e-mail")
-        postcode    = normalize_postcode(g("郵便番号"))
+        postcode    = _normalize_postcode(g("郵便番号"))
         addr_raw    = g("住所")
         tel_company = g("TEL会社")
         tel_dept    = g("TEL部門")
@@ -103,31 +120,37 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
-        # --- 住所分割 ---
-        addr1, addr2 = split_address(addr_raw)
+        # 住所（まず住所1に原文。分割できた時だけ上書き）
+        a1, a2 = split_address(addr_raw)
+        if (a2 or "").strip():
+            addr1, addr2 = a1, a2
+        else:
+            addr1, addr2 = addr_raw, ""
 
-        # --- 電話の正規化・連結 ---
-        phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
+        # 電話
+        phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
-        # --- 部署 2分割 ---
-        from utils.textnorm import split_department  # 明示importでもOK
-        dept1, dept2 = split_department(dept)
+        # 部署（前半/後半）
+        dept1, dept2 = _split_department_half(dept_raw)
 
-        # --- 姓名・かな ---
+        # 姓名・かな（かなは空）
         full_name = f"{last}{first}"
-        last_kana = to_katakana_guess(last)
-        first_kana = to_katakana_guess(first)
-        full_name_kana = ""  # 姓名かなは未実装のまま
+        last_kana = ""
+        first_kana = ""
+        full_name_kana = ""
 
-        # --- 会社名かな ---
-        company_kana = _company_kana_guess(company)
+        # 会社名（全角化）→ 会社名かなは現段階では付与せず空に
+        company = _to_zenkaku(company_raw)
+        company_kana = ""
 
-        # --- 空防止 ---
-        if not company.strip():
-            company = company_raw.strip()
-
-        # --- メモ/備考 ---
-        flags = _iter_extra_flags(reader.fieldnames or [], row)
+        # メモ/備考（固定カラム以降の '1' 系を採用）
+        fn_clean = reader.fieldnames or []
+        tail_headers = fn_clean[len(EIGHT_FIXED):]
+        flags: List[str] = []
+        for hdr in tail_headers:
+            val = (row.get(hdr, "") or "").strip()
+            if val in ("1", "1.0", "TRUE", "True", "true"):
+                flags.append(hdr)
         memo = ["", "", "", "", ""]
         biko = ""
         for i, hdr in enumerate(flags):
@@ -136,7 +159,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             else:
                 biko += (("\n" if biko else "") + hdr)
 
-        # === ここから 61 列を厳密に並べる ===
+        # 出力整形（61列）
         out_row: List[str] = [
             # 1..12
             last, first,
@@ -154,13 +177,13 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             phone_join, "", email,
             url, "",
 
-            # 31..39 その他（★9列そろえる：〒,住所1,住所2,住所3,電話,IM,E,URL,Social）
-            "", "", "", "", "", "", "", "",
+            # 31..39 その他
+            "", "", "", "", "", "", "", "", "",
 
             # 40..48 会社名/部署/役職/連名
             company_kana, company,
             dept1, dept2,
-            title,
+            _to_zenkaku(title_raw),
             "", "", "", "",
 
             # 49..56 メモ/備考
@@ -176,9 +199,9 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
 
         rows_out.append(out_row)
 
-    # --- 書き出し ---
-    buf = io.StringIO()
-    w = csv.writer(buf, lineterminator="\n")
+    # CSV書き出し
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
     w.writerow(ATENA_HEADERS)
     w.writerows(rows_out)
-    return buf.getvalue()
+    return out.getvalue()
