@@ -1,12 +1,10 @@
 # app.py
-# Eight → 宛名職人 変換 v1.17
-# - / と /healthz に app / converter / address / textnorm / kana / building_dict / areacode_dict
-#   ＋ furigana_engine / furigana_detail / python / sys.executable / pykakasi の find_spec 結果などを表示
+# Eight → 宛名職人 変換 v1.18
+# - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
+# - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
 
 import io
 import os
-import sys
-import importlib.util
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
@@ -15,7 +13,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.17"
+VERSION = "v1.18"
 
 INDEX_HTML = """
 <!doctype html>
@@ -48,16 +46,11 @@ INDEX_HTML = """
       <div><strong>Address:</strong> <code>{{addr_ver or "N/A"}}</code></div>
       <div><strong>Textnorm:</strong> <code>{{txn_ver or "N/A"}}</code></div>
       <div><strong>Kana:</strong> <code>{{kana_ver or "N/A"}}</code></div>
-      <div><strong>Furigana Engine:</strong> <code>{{furigana_engine or "N/A"}}</code></div>
-      <div><strong>Furigana Detail:</strong> <code>{{furigana_detail or "N/A"}}</code></div>
       <div><strong>Building Dict:</strong> <code>{{bldg_dict_ver or "N/A"}}</code></div>
-      <div><strong>Areacode Dict:</strong> <code>{{areacode_ver or "N/A"}}</code></div>
-      <div><strong>Python:</strong> <code>{{python_ver}}</code></div>
-      <div><strong>Executable:</strong> <code>{{python_exec}}</code></div>
-      <div><strong>pykakasi_spec:</strong> <code>{{pykakasi_spec}}</code></div>
-      <div><strong>pykakasi_version:</strong> <code>{{pykakasi_version}}</code></div>
+      <div><strong>Corp Terms:</strong> <code>{{corp_terms_ver or "N/A"}}</code></div>
+      <div><strong>Company Overrides:</strong> <code>{{company_overrides_ver or "N/A"}}</code></div>
     </div>
-    <div class="muted" style="margin-top:8px;">※ 現在稼働中のモジュール/辞書/エンジンの状態です。</div>
+    <div class="muted" style="margin-top:8px;">※ 上記は現在稼働中のモジュール/辞書のバージョンです。</div>
   </div>
 </body>
 </html>
@@ -66,72 +59,60 @@ INDEX_HTML = """
 app = Flask(__name__)
 
 def _module_versions():
-    """各モジュール/辞書/エンジンのバージョンと pykakasi の在/不在情報を安全に取得"""
+    """各モジュールと辞書のバージョンを安全に取得"""
     try:
         from converters.address import __version__ as ADDR_VER
     except Exception:
         ADDR_VER = None
+
     try:
-        from utils.textnorm import __version__ as TXN_VER, bldg_words_version
+        # textnorm 側に辞書バージョン問い合わせ関数を持たせる
+        from utils.textnorm import (
+            __version__ as TXN_VER,
+            bldg_words_version,
+            corp_terms_version,
+            company_overrides_version,
+        )
         BLDG_VER = bldg_words_version()
+        CORP_TERMS_VER = corp_terms_version()
+        COMPANY_OVR_VER = company_overrides_version()
     except Exception:
         TXN_VER = None
         BLDG_VER = None
+        CORP_TERMS_VER = None
+        COMPANY_OVR_VER = None
+
     try:
-        from utils.kana import __version__ as KANA_VER, engine_detail as FURIGANA_DETAIL
-        eng, detail = FURIGANA_DETAIL()
-        KANA_ENGINE = eng
-        KANA_DETAIL = detail
+        from utils.kana import __version__ as KANA_VER, engine_name, engine_detail
     except Exception:
         KANA_VER = None
-        KANA_ENGINE = None
-        KANA_DETAIL = None
-    try:
-        from utils.jp_area_codes import __version__ as AREACODE_VER
-    except Exception:
-        AREACODE_VER = None
+        def engine_name(): return None
+        def engine_detail(): return None
 
-    # pykakasi の import 実在チェック
-    spec = importlib.util.find_spec("pykakasi")
-    pykakasi_spec = bool(spec)
-    pykakasi_version = None
-    if spec:
-        try:
-            import pykakasi  # type: ignore
-            pykakasi_version = getattr(pykakasi, "__version__", "unknown")
-        except Exception:
-            pykakasi_version = "import-error"
-
-    return {
-        "ADDR_VER": ADDR_VER,
-        "TXN_VER": TXN_VER,
-        "KANA_VER": KANA_VER,
-        "KANA_ENGINE": KANA_ENGINE,
-        "KANA_DETAIL": KANA_DETAIL,
-        "BLDG_VER": BLDG_VER,
-        "AREACODE_VER": AREACODE_VER,
-        "PYKAKASI_SPEC": pykakasi_spec,
-        "PYKAKASI_VER": pykakasi_version,
-    }
+    return (
+        ADDR_VER,
+        TXN_VER,
+        KANA_VER,
+        BLDG_VER,
+        CORP_TERMS_VER,
+        COMPANY_OVR_VER,
+        engine_name(),
+        engine_detail(),
+    )
 
 @app.route("/", methods=["GET"])
 def index():
-    mv = _module_versions()
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver, corp_terms_ver, company_overrides_ver, _, _ = _module_versions()
     return render_template_string(
         INDEX_HTML,
         version=VERSION,
         conv=CONVERTER_VERSION,
-        addr_ver=mv["ADDR_VER"],
-        txn_ver=mv["TXN_VER"],
-        kana_ver=mv["KANA_VER"],
-        furigana_engine=mv["KANA_ENGINE"],
-        furigana_detail=mv["KANA_DETAIL"],
-        bldg_dict_ver=mv["BLDG_VER"],
-        areacode_ver=mv["AREACODE_VER"],
-        python_ver=sys.version.split()[0],
-        python_exec=sys.executable,
-        pykakasi_spec=mv["PYKAKASI_SPEC"],
-        pykakasi_version=mv["PYKAKASI_VER"],
+        addr_ver=addr_ver,
+        txn_ver=txn_ver,
+        kana_ver=kana_ver,
+        bldg_dict_ver=bldg_dict_ver,
+        corp_terms_ver=corp_terms_ver,
+        company_overrides_ver=company_overrides_ver,
     )
 
 @app.route("/convert", methods=["POST"])
@@ -141,12 +122,12 @@ def convert():
         abort(400, "CSV/TSVファイルが選択されていません。")
 
     try:
-        csv_or_tsv_text = f.stream.read().decode("utf-8")
+        text = f.stream.read().decode("utf-8")
     except UnicodeDecodeError:
         abort(400, "文字コードは UTF-8 にしてください。")
 
     try:
-        out_csv_text = convert_eight_csv_text_to_atena_csv_text(csv_or_tsv_text)
+        out_csv_text = convert_eight_csv_text_to_atena_csv_text(text)
     except Exception as e:
         abort(500, f"変換に失敗しました: {e}")
 
@@ -165,25 +146,25 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    mv = _module_versions()
-    return jsonify(
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver, corp_terms_ver, company_overrides_ver, furigana_engine, furigana_detail = _module_versions()
+    info = dict(
         ok=True,
         app=VERSION,
         converter=CONVERTER_VERSION,
-        address=mv["ADDR_VER"],
-        textnorm=mv["TXN_VER"],
-        kana=mv["KANA_VER"],
-        furigana_engine=mv["KANA_ENGINE"],
-        furigana_detail=mv["KANA_DETAIL"],
-        building_dict=mv["BLDG_VER"],
-        areacode_dict=mv["AREACODE_VER"],
-        python=sys.version.split()[0],
-        executable=sys.executable,
-        pykakasi_spec=mv["PYKAKASI_SPEC"],
-        pykakasi_version=mv["PYKAKASI_VER"],
-        sys_path=sys.path[:6],
+        address=addr_ver,
+        textnorm=txn_ver,
+        kana=kana_ver,
+        building_dict=bldg_dict_ver,
+        corp_terms=corp_terms_ver,
+        company_overrides=company_overrides_ver,
+        furigana_engine=furigana_engine,
+        furigana_detail=furigana_detail,
+        python=f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
         env_FURIGANA_ENABLED=os.environ.get("FURIGANA_ENABLED"),
-    ), 200
+        executable=os.environ.get("VIRTUAL_ENV") and os.path.join(os.environ["VIRTUAL_ENV"], "bin", f"python{os.sys.version_info.major}.{os.sys.version_info.minor}") or os.sys.executable,
+        sys_path=list(os.sys.path),
+    )
+    return jsonify(info), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", "8000")), debug=False)
