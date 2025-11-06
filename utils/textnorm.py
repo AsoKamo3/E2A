@@ -1,124 +1,101 @@
 # utils/textnorm.py
-# v1.13: restore __version__; keep the minimal, stable APIs from v1.12
-# Exposes:
-#   - to_zenkaku
-#   - normalize_postcode
-#   - normalize_block_notation
-#   - load_bldg_words
-#   - bldg_words_version
-
+# v1.14
+# 最小限・安定版：既存呼び出し点で使われる関数のみを提供
 from __future__ import annotations
-
-import json
 import re
+import json
 import unicodedata
-from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Any, Tuple
 
-__version__ = "v1.13"
-
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-_BLDG_JSON = _DATA_DIR / "bldg_words.json"
+try:
+    import jaconv  # 半全角変換
+except Exception:
+    jaconv = None  # フェールセーフ
 
 __all__ = [
-    "__version__",
     "to_zenkaku",
-    "normalize_postcode",
     "normalize_block_notation",
+    "normalize_postcode",
+    "normalize_phone",
     "load_bldg_words",
     "bldg_words_version",
+    "BZ_WORDS",
+    "__version__",
 ]
 
-# -----------------------------
-# Basic normalization utilities
-# -----------------------------
+__version__ = "v1.14"
 
-def to_zenkaku(text: str) -> str:
-    """
-    NFKC 正規化（半角→全角・互換文字の正規化）。
-    住所・会社名・人名など広範に使うため、副作用の強い置換は行わない。
-    """
-    if text is None:
-        return ""
-    return unicodedata.normalize("NFKC", str(text))
+# ---- 建物語彙のロード -----------------------------------------------------
 
+_BLDG_JSON_PATH = Path(__file__).resolve().parent.parent / "data" / "bldg_words.json"
+BZ_WORDS = set()
+_BLDG_VERSION = "unknown"
 
-# -----------------------------
-# Postcode normalization
-# -----------------------------
-
-# ハイフン類を ASCII ハイフンへ寄せるための正規表現
-_POSTCODE_RE = re.compile(r"(\d)[\-\u2212\u2010-\u2015\u30fc\uFF0D\u2013\u2014](\d)")
-_ONLY_DIGITS_RE = re.compile(r"\D+")
-
-def normalize_postcode(text: str) -> str:
-    """
-    郵便番号を「123-4567」形式に整える（数字が7桁あれば整形）。
-    7桁未満/超のときは、NFKC正規化＋ハイフン統一のみ行う。
-    例:
-      "１００  -  ８４３９" -> "100-8439"
-      "1008439"           -> "100-8439"
-    """
-    if not text:
-        return ""
-    s = to_zenkaku(text).strip()
-    digits = _ONLY_DIGITS_RE.sub("", s)
-    if len(digits) == 7:
-        return f"{digits[:3]}-{digits[3:]}"
-    # ハイフン類を ASCII ハイフンに統一
-    s = _POSTCODE_RE.sub(r"\1-\2", s)
-    return s
-
-
-# -----------------------------
-# Block notation normalization
-# -----------------------------
-
-_HYPHENS = r"[\-\u2212\u2010-\u2015\u30fc\uFF0D\u2013\u2014]"
-_BLOCK_RE = re.compile(rf"\s*({_HYPHENS})\s*")
-
-def normalize_block_notation(text: str) -> str:
-    """
-    番地/号などの「1-2-3」表記をゆるく正規化。
-      - 多様なハイフンを ASCII '-' に統一
-      - ハイフン前後の余分な空白を除去
-      - 連続ハイフンは 1 本化
-    それ以外は壊さない（全角数字・漢数字・ビル名等は触らない）
-    """
-    if not text:
-        return ""
-    s = to_zenkaku(text)
-    s = _BLOCK_RE.sub("-", s)      # ハイフン周りの空白も同時に整理
-    s = re.sub(r"-{2,}", "-", s)   # 連続ハイフンの1本化
-    return s.strip()
-
-
-# -----------------------------
-# Building words dictionary
-# -----------------------------
-
-@lru_cache(maxsize=1)
-def load_bldg_words() -> Tuple[Dict[str, Any], str]:
-    """
-    data/bldg_words.json を読み込む。
-    返り値: (payload, version)
-      - payload: JSON本体（辞書）
-      - version: JSON内の "version" があればそれ、無ければ "unknown"
-    """
-    payload: Dict[str, Any] = {}
-    version = "unknown"
-    if _BLDG_JSON.exists():
-        try:
-            payload = json.loads(_BLDG_JSON.read_text(encoding="utf-8"))
-            version = str(payload.get("version", "unknown"))
-        except Exception:
-            payload = {}
-            version = "unknown"
-    return payload, version
-
+def load_bldg_words() -> set[str]:
+    """data/bldg_words.json を読み込み、語彙セットを返す。"""
+    global BZ_WORDS, _BLDG_VERSION
+    if BZ_WORDS:
+        return BZ_WORDS
+    try:
+        with _BLDG_JSON_PATH.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        words = obj.get("words") or obj.get("list") or []
+        _BLDG_VERSION = obj.get("version", "unknown")
+        BZ_WORDS = set(map(str, words))
+    except Exception:
+        BZ_WORDS = set()
+        _BLDG_VERSION = "unknown"
+    return BZ_WORDS
 
 def bldg_words_version() -> str:
-    """bldg_words.json のバージョン文字列を返す（無ければ "unknown"）。"""
-    _, ver = load_bldg_words()
-    return ver
+    """bldg_words.json のバージョン文字列を返す。"""
+    # 事前に load していなくても返せるように軽く読む
+    global _BLDG_VERSION
+    if _BLDG_VERSION != "unknown":
+        return _BLDG_VERSION
+    try:
+        with _BLDG_JSON_PATH.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+        _BLDG_VERSION = obj.get("version", "unknown")
+    except Exception:
+        _BLDG_VERSION = "unknown"
+    return _BLDG_VERSION
+
+# ---- 文字種・記号ノーマライズ --------------------------------------------
+
+_HYPHENS = [
+    "-", "‐", "-", "‒", "–", "—", "―", "ー", "ｰ", "－",
+]
+
+def _unify_hyphen(s: str, to="-" ) -> str:
+    for h in _HYPHENS:
+        s = s.replace(h, to)
+    return s
+
+def to_zenkaku(s: str) -> str:
+    """
+    可能なら jaconv でASCII/数字/かなを全角へ。無ければNFKCのみ。
+    """
+    s = "" if s is None else str(s)
+    if jaconv:
+        return jaconv.h2z(s, ascii=True, digit=True, kana=True)
+    # フォールバック：NFKCで正規化し、ハイフン類を全角に寄せない（最小）
+    return unicodedata.normalize("NFKC", s)
+
+def normalize_block_notation(s: str) -> str:
+    """
+    住居表示の「番地・号」周りの表記ゆれを緩く整形。
+    - ハイフン類を半角ハイフンに統一
+    - 全角/半角の数字は一旦NFKCに寄せる
+    例: "１－８－１" → "1-8-1"
+    """
+    s = "" if s is None else str(s)
+    s = unicodedata.normalize("NFKC", s)
+    s = _unify_hyphen(s, "-")
+    # 連続ハイフンは1個へ
+    s = re.sub(r"-{2,}", "-", s)
+    return s
+
+# ---- 郵便番号ノーマライズ -------------------------------------------------
+
+_POST_RE = r
