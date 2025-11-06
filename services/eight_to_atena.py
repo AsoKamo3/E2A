@@ -1,12 +1,9 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体
-# - 列順は ATENA_HEADERS と厳密一致（61列）
-# - 住所分割は converters.address.split_address に委譲（分割できなければ (原文, "")）
-# - 部署は区切り文字でトークン化し、前半(ceil(n/2))を部署名1、後半を部署名2（全角スペース結合）
-# - 姓かな/名かな/姓名かなは現段階では付与しない（空）
-# - 電話は「;」連結（スラッシュは置換）
-# - CSVのヘッダ・キーは BOM(U+FEFF) と前後空白を除去してから参照
-# - 区切りは csv.Sniffer で自動判定（カンマ/タブ両対応）
+# Eight CSV/TSV → 宛名職人CSV 変換本体（v2.20）
+# - 住所/会社名/部署/役職 を ASCII→全角（数字・英字・記号・スペース含む）でワイド化
+# - それ以外は従来通り（電話は半角のままで「;」連結）
+# - 他は v2.19 と同じ
+
 from __future__ import annotations
 
 import io
@@ -17,8 +14,9 @@ import re
 from typing import List
 
 from converters.address import split_address
+from utils.textnorm import to_zenkaku_wide  # ★ 新規：ワイド全角化
 
-__version__ = "v2.19"
+__version__ = "v2.20"
 
 ATENA_HEADERS: List[str] = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
@@ -34,7 +32,6 @@ ATENA_HEADERS: List[str] = [
     "備考1","備考2","備考3","誕生日","性別","血液型","趣味","性格"
 ]
 
-# Eight 側の固定カラム（この順に存在する想定）
 EIGHT_FIXED = [
     "会社名","部署名","役職","姓","名","e-mail","郵便番号","住所","TEL会社",
     "TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
@@ -46,30 +43,20 @@ def _clean_key(k: str) -> str:
 def _clean_row(row: dict) -> dict:
     return {_clean_key(k): (v or "") for k, v in row.items()}
 
-def _to_zenkaku(s: str) -> str:
-    if not s:
-        return s
-    return unicodedata.normalize("NFKC", s)
-
-# 区切り集合：／ / ・ ， 、 ｜ | 半角/全角スペース
 SEP_PATTERN = re.compile(r'(?:／|/|・|,|、|｜|\||\s)+')
 
 def _split_department_half(s: str) -> tuple[str, str]:
-    """
-    部署名をトークン化 → 前半（ceil(n/2)）を部署名1、後半を部署名2。
-    結合は全角スペース。
-    """
     s = (s or "").strip()
     if not s:
         return "", ""
     tokens = [t for t in SEP_PATTERN.split(s) if t]
     if len(tokens) <= 1:
-        return _to_zenkaku(s), ""
+        return s, ""
     n = len(tokens)
-    k = math.ceil(n / 2.0)  # 前半のサイズ
-    left = "　".join(tokens[:k])
+    k = math.ceil(n / 2.0)
+    left = "　".join(tokens[:k])     # 全角スペースで結合
     right = "　".join(tokens[k:]) if k < n else ""
-    return _to_zenkaku(left), _to_zenkaku(right)
+    return left, right
 
 def _normalize_postcode(z: str) -> str:
     return (z or "").replace("-", "").strip()
@@ -77,25 +64,18 @@ def _normalize_postcode(z: str) -> str:
 def _normalize_phone(*nums: str) -> str:
     parts = [p.strip() for p in nums if p and p.strip()]
     joined = ";".join(parts)
-    # 念のためスラッシュ区切りを矯正
     return joined.replace(" / ", ";").replace("/", ";")
 
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
-    """
-    Eight のCSV/TSVテキスト → 宛名職人CSVテキスト（61列）
-    - 区切りは Sniffer で自動判定（カンマ/タブ）
-    """
     buf = io.StringIO(csv_text)
     sample = buf.read(4096)
     buf.seek(0)
     try:
         dialect = csv.Sniffer().sniff(sample, delimiters=[",", "\t"])
     except Exception:
-        # フォールバックはカンマ
         class _D: delimiter = ","
         dialect = _D()
     reader = csv.DictReader(buf, dialect=dialect)
-    # ヘッダ正規化
     reader.fieldnames = [_clean_key(h) for h in (reader.fieldnames or [])]
 
     rows_out: List[List[str]] = []
@@ -104,7 +84,6 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         row = _clean_row(raw)
         g = lambda k: (row.get(_clean_key(k), "") or "").strip()
 
-        # 入力
         company_raw = g("会社名")
         dept_raw    = g("部署名")
         title_raw   = g("役職")
@@ -120,30 +99,37 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
-        # 住所（まず住所1に原文。分割できた時だけ上書き）
+        # 住所（まず1に原文→split_addressが2部にできたときのみ上書き）
         a1, a2 = split_address(addr_raw)
         if (a2 or "").strip():
-            addr1, addr2 = a1, a2
+            addr1_raw, addr2_raw = a1, a2
         else:
-            addr1, addr2 = addr_raw, ""
+            addr1_raw, addr2_raw = addr_raw, ""
 
         # 電話
         phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
         # 部署（前半/後半）
-        dept1, dept2 = _split_department_half(dept_raw)
+        dept1_raw, dept2_raw = _split_department_half(dept_raw)
 
-        # 姓名・かな（かなは空）
+        # ★ 全角ワイド化（ASCII→全角：数字・英字・記号・スペース）
+        addr1 = to_zenkaku_wide(addr1_raw)
+        addr2 = to_zenkaku_wide(addr2_raw)
+        company = to_zenkaku_wide(company_raw)
+        dept1 = to_zenkaku_wide(dept1_raw)
+        dept2 = to_zenkaku_wide(dept2_raw)
+        title = to_zenkaku_wide(title_raw)
+
+        # 姓名（かなは空）
         full_name = f"{last}{first}"
         last_kana = ""
         first_kana = ""
         full_name_kana = ""
 
-        # 会社名（全角化）→ 会社名かなは現段階では付与せず空に
-        company = _to_zenkaku(company_raw)
+        # 会社名かな（現段階では未付与）
         company_kana = ""
 
-        # メモ/備考（固定カラム以降の '1' 系を採用）
+        # メモ/備考（固定以降の '1' を拾う）
         fn_clean = reader.fieldnames or []
         tail_headers = fn_clean[len(EIGHT_FIXED):]
         flags: List[str] = []
@@ -159,38 +145,24 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             else:
                 biko += (("\n" if biko else "") + hdr)
 
-        # 出力整形（61列）
         out_row: List[str] = [
-            # 1..12
             last, first,
             last_kana, first_kana,
             full_name, full_name_kana,
             "", "", "",
             "", "", "",
-
-            # 13..21 自宅
             "", "", "", "", "",
             "", "", "", "",
-
-            # 22..30 会社
             postcode, addr1, addr2, "",
             phone_join, "", email,
             url, "",
-
-            # 31..39 その他
             "", "", "", "", "", "", "", "", "",
-
-            # 40..48 会社名/部署/役職/連名
             company_kana, company,
             dept1, dept2,
-            _to_zenkaku(title_raw),
+            title,
             "", "", "", "",
-
-            # 49..56 メモ/備考
             memo[0], memo[1], memo[2], memo[3], memo[4],
             biko, "", "",
-
-            # 57..61 個人属性
             "", "", "", "", ""
         ]
 
@@ -199,7 +171,6 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
 
         rows_out.append(out_row)
 
-    # CSV書き出し
     out = io.StringIO()
     w = csv.writer(out, lineterminator="\n")
     w.writerow(ATENA_HEADERS)
