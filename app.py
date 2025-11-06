@@ -1,10 +1,11 @@
 # app.py
-# Eight → 宛名職人 変換 v1.14
+# Eight → 宛名職人 変換 v1.15
 # - トップ/healthz に app / converter / address / textnorm / kana / building_dict / areacode_dict
-#   に加えて furigana_engine を表示
+#   に加えて furigana_engine / furigana_detail を表示
 
 import io
 import os
+import sys
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
@@ -13,7 +14,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.14"
+VERSION = "v1.15"
 
 INDEX_HTML = """
 <!doctype html>
@@ -47,10 +48,12 @@ INDEX_HTML = """
       <div><strong>Textnorm:</strong> <code>{{txn_ver or "N/A"}}</code></div>
       <div><strong>Kana:</strong> <code>{{kana_ver or "N/A"}}</code></div>
       <div><strong>Furigana Engine:</strong> <code>{{furigana_engine or "N/A"}}</code></div>
+      <div><strong>Furigana Detail:</strong> <code>{{furigana_detail or "N/A"}}</code></div>
       <div><strong>Building Dict:</strong> <code>{{bldg_dict_ver or "N/A"}}</code></div>
       <div><strong>Areacode Dict:</strong> <code>{{areacode_ver or "N/A"}}</code></div>
+      <div><strong>Python:</strong> <code>{{python_ver}}</code></div>
     </div>
-    <div class="muted" style="margin-top:8px;">※ 上記は現在稼働中のモジュール/辞書/エンジンの状態です。</div>
+    <div class="muted" style="margin-top:8px;">※ 現在稼働中のモジュール/辞書/エンジンの状態です。</div>
   </div>
 </body>
 </html>
@@ -71,20 +74,23 @@ def _module_versions():
         TXN_VER = None
         BLDG_VER = None
     try:
-        from utils.kana import __version__ as KANA_VER, engine_name as FURIGANA_ENGINE
-        KANA_ENGINE = FURIGANA_ENGINE()
+        from utils.kana import __version__ as KANA_VER, engine_detail as FURIGANA_DETAIL
+        eng, detail = FURIGANA_DETAIL()
+        KANA_ENGINE = eng
+        KANA_DETAIL = detail
     except Exception:
         KANA_VER = None
         KANA_ENGINE = None
+        KANA_DETAIL = None
     try:
         from utils.jp_area_codes import __version__ as AREACODE_VER
     except Exception:
         AREACODE_VER = None
-    return ADDR_VER, TXN_VER, KANA_VER, KANA_ENGINE, BLDG_VER, AREACODE_VER
+    return ADDR_VER, TXN_VER, KANA_VER, KANA_ENGINE, KANA_DETAIL, BLDG_VER, AREACODE_VER
 
 @app.route("/", methods=["GET"])
 def index():
-    addr_ver, txn_ver, kana_ver, furigana_engine, bldg_dict_ver, areacode_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, furigana_engine, furigana_detail, bldg_dict_ver, areacode_ver = _module_versions()
     return render_template_string(
         INDEX_HTML,
         version=VERSION,
@@ -93,8 +99,10 @@ def index():
         txn_ver=txn_ver,
         kana_ver=kana_ver,
         furigana_engine=furigana_engine,
+        furigana_detail=furigana_detail,
         bldg_dict_ver=bldg_dict_ver,
         areacode_ver=areacode_ver,
+        python_ver=sys.version.split()[0],
     )
 
 @app.route("/convert", methods=["POST"])
@@ -128,7 +136,7 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    addr_ver, txn_ver, kana_ver, furigana_engine, bldg_dict_ver, areacode_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, furigana_engine, furigana_detail, bldg_dict_ver, areacode_ver = _module_versions()
     return jsonify(
         ok=True,
         app=VERSION,
@@ -137,8 +145,10 @@ def healthz():
         textnorm=txn_ver,
         kana=kana_ver,
         furigana_engine=furigana_engine,
+        furigana_detail=furigana_detail,
         building_dict=bldg_dict_ver,
         areacode_dict=areacode_ver,
+        python=sys.version.split()[0],
     ), 200
 
 if __name__ == "__main__":
