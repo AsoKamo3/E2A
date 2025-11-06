@@ -1,0 +1,15 @@
+{
+  "version": "v1.0.0",
+  "normalize": {
+    "nfkc": true,
+    "lower": true,
+    "strip_spaces": true,
+    "collapse_spaces": true,
+    "unify_ampersand": true,
+    "unify_slash_to": "/"
+  },
+  "overrides": {
+    "dentsu japan": "デンツウジャパン",
+    "tabibar & cafe": "タビバーカフェ"
+  }
+}
