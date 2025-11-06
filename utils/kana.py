@@ -1,15 +1,15 @@
 # utils/kana.py
-# ふりがな自動付与（推測）モジュール v0.6
+# ふりがな自動付与（推測）モジュール v0.7
 # - FURIGANA_ENABLED="1" で有効（デフォルト: 有効）
 # - pykakasi が使えればそれを利用。失敗時は簡易（ひら→カタカナ）にフォールバック
-# - engine_name() で現在のエンジン状態を取得（"pykakasi" / "fallback" / "disabled"）
+# - engine_name() / engine_detail() で現在のエンジン状態を可視化
 
 from __future__ import annotations
 import os
 import re
-from typing import Literal
+from typing import Literal, Tuple
 
-__version__ = "v0.6"
+__version__ = "v0.7"
 
 _HIRA2KATA_TABLE = {chr(i): chr(i + 0x60) for i in range(0x3041, 0x3097)}  # ぁ-ゖ
 
@@ -66,4 +66,18 @@ def engine_name() -> Literal["pykakasi", "fallback", "disabled"]:
         _ = pykakasi.kakasi()
         return "pykakasi"
     except Exception:
-        return
+        return "fallback"
+
+def engine_detail() -> Tuple[str, str]:
+    """
+    (engine, detail) を返す。detail には使われたエンジン・エラー要因などのヒント文字列。
+    - ("pykakasi", "pykakasi ok") / ("fallback","pykakasi import error ...") / ("disabled","env disabled")
+    """
+    if os.environ.get("FURIGANA_ENABLED", "1") != "1":
+        return ("disabled", "env FURIGANA_ENABLED!=1")
+    try:
+        import pykakasi  # type: ignore
+        _ = pykakasi.kakasi()
+        return ("pykakasi", "pykakasi ok")
+    except Exception as e:
+        return ("fallback", f"pykakasi error: {e.__class__.__name__}")
