@@ -1,6 +1,8 @@
 # app.py
-# Eight → 宛名職人 変換 v1.12
-# - トップページと /healthz に app / converter / address / textnorm / kana / bldg_dict_version を表示
+# Eight → 宛名職人 変換 v1.13
+# - トップページと /healthz に app / converter / address / textnorm / kana /
+#   building_dict / areacode_dict を表示
+# - CSV/TSV 自動判定アップロード → 変換後CSVをダウンロード
 
 import io
 import os
@@ -12,7 +14,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.12"
+VERSION = "v1.13"
 
 INDEX_HTML = """
 <!doctype html>
@@ -46,6 +48,7 @@ INDEX_HTML = """
       <div><strong>Textnorm:</strong> <code>{{txn_ver or "N/A"}}</code></div>
       <div><strong>Kana:</strong> <code>{{kana_ver or "N/A"}}</code></div>
       <div><strong>Building Dict:</strong> <code>{{bldg_dict_ver or "N/A"}}</code></div>
+      <div><strong>Areacode Dict:</strong> <code>{{areacode_ver or "N/A"}}</code></div>
     </div>
     <div class="muted" style="margin-top:8px;">※ 上記は現在稼働中のモジュール/辞書のバージョンです。</div>
   </div>
@@ -71,11 +74,15 @@ def _module_versions():
         from utils.kana import __version__ as KANA_VER
     except Exception:
         KANA_VER = None
-    return ADDR_VER, TXN_VER, KANA_VER, BLDG_VER
+    try:
+        from utils.jp_area_codes import __version__ as AREACODE_VER
+    except Exception:
+        AREACODE_VER = None
+    return ADDR_VER, TXN_VER, KANA_VER, BLDG_VER, AREACODE_VER
 
 @app.route("/", methods=["GET"])
 def index():
-    addr_ver, txn_ver, kana_ver, bldg_dict_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver, areacode_ver = _module_versions()
     return render_template_string(
         INDEX_HTML,
         version=VERSION,
@@ -84,6 +91,7 @@ def index():
         txn_ver=txn_ver,
         kana_ver=kana_ver,
         bldg_dict_ver=bldg_dict_ver,
+        areacode_ver=areacode_ver,
     )
 
 @app.route("/convert", methods=["POST"])
@@ -117,7 +125,7 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    addr_ver, txn_ver, kana_ver, bldg_dict_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver, areacode_ver = _module_versions()
     return jsonify(
         ok=True,
         app=VERSION,
@@ -126,10 +134,10 @@ def healthz():
         textnorm=txn_ver,
         kana=kana_ver,
         building_dict=bldg_dict_ver,
+        areacode_dict=areacode_ver,
     ), 200
 
 if __name__ == "__main__":
     # Render では gunicorn 起動なので通常ここは実行されませんが、
     # ファイルの「構文」は常に正しく保つ必要があります。
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", "8000")), debug=False)
-    
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
