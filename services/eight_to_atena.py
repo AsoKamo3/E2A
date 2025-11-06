@@ -1,8 +1,11 @@
 # services/eight_to_atena.py
 # Eight CSV → 宛名職人CSV 変換本体（I/Oと行マッピング）
-# v2.29 : 会社種別語（法人格語）の一覧を外部 google2atena.corp_terms.CORP_TERMS が
-#         存在すれば優先採用。無ければ内蔵デフォルトを使用。
-#         ふりがなは utils.kana 側の拡張（外部辞書マージ）をそのまま利用。
+# - 列の並びは ATENA_HEADERS と厳密一致（61列）
+# - 部署名の 2 分割（utils.textnorm.split_department）
+# - 住所分割は converters.address.split_address を使用
+# - ふりがな推定は utils.kana（会社名はオーバーライド辞書対応）
+#
+# v2.28 : ふりがなを必ずカタカナで出力。会社名かなはオーバーライド辞書（company_kana_overrides.json）対応。
 
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from utils.textnorm import (
 )
 from utils.kana import to_katakana_guess, ensure_katakana, company_kana_from_name
 
-__version__ = "v2.29"
+__version__ = "v2.28"
 
 # 宛名職人ヘッダ（61列：この順で出力）
 ATENA_HEADERS: List[str] = [
@@ -42,34 +45,34 @@ EIGHT_FIXED = [
     "TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
 ]
 
-# 会社種別（外部があれば優先採用）
-try:
-    from google2atena.corp_terms import CORP_TERMS as _EXT_CORP_TERMS  # type: ignore
-    COMPANY_TYPES = list(_EXT_CORP_TERMS)
-except Exception:
-    COMPANY_TYPES = [
-        "株式会社","有限会社","合同会社","合資会社","合名会社","相互会社","清算株式会社",
-        "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
-        "特定非営利活動法人","ＮＰＯ法人","中間法人","有限責任中間法人","特例民法法人",
-        "学校法人","医療法人","医療法人社団","医療法人財団","宗教法人","社会福祉法人",
-        "国立大学法人","公立大学法人","独立行政法人","地方独立行政法人","特殊法人",
-        "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託","公共団体",
-        "協会","研究所","機構","振興会","財団","基金","商工会議所","商工会"
-    ]
+# 会社種別（かな推定時の「除去」対象。元の会社名そのものは書き換えない）
+COMPANY_TYPES = [
+    "株式会社","有限会社","合同会社","合資会社","合名会社","相互会社","清算株式会社",
+    "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
+    "特定非営利活動法人","ＮＰＯ法人","中間法人","有限責任中間法人","特例民法法人",
+    "学校法人","医療法人","医療法人社団","医療法人財団","宗教法人","社会福祉法人",
+    "国立大学法人","公立大学法人","独立行政法人","地方独立行政法人","特殊法人",
+    "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託"
+]
 
 def _strip_company_type(name: str) -> str:
     base = name or ""
-    # 長語優先で除去
-    for t in sorted(COMPANY_TYPES, key=len, reverse=True):
+    for t in COMPANY_TYPES:
         base = base.replace(t, "")
     return base
 
 def _company_kana_guess(company_name: str) -> str:
+    """
+    会社名かなの推定。
+    1) 会社種別を除去したベース文字列を得る
+    2) company_kana_from_name（オーバーライド辞書＋推測）でカタカナ化
+    """
     base = _strip_company_type(company_name or "")
     kana = company_kana_from_name(base)
     return ensure_katakana(kana)
 
 def _iter_extra_flags(fieldnames: List[str], row: dict) -> List[str]:
+    """Eight 固定カラム以降で値が '1' のヘッダ名を収集。"""
     flags = []
     tail_headers = fieldnames[len(EIGHT_FIXED):] if fieldnames else []
     for hdr in tail_headers:
@@ -79,12 +82,17 @@ def _iter_extra_flags(fieldnames: List[str], row: dict) -> List[str]:
     return flags
 
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
+    """
+    Eight CSV（UTF-8, カンマ区切り, 1行目ヘッダ）→ 宛名職人 CSV テキスト
+    - 出力には ATENA_HEADERS（61列）を必ず含む
+    """
     reader = csv.DictReader(io.StringIO(csv_text))
     rows_out: List[List[str]] = []
 
     for row in reader:
         g = lambda k: (row.get(k, "") or "").strip()
 
+        # --- 入力の取得 ---
         company_raw = g("会社名")
         company     = company_raw
         dept        = g("部署名")
@@ -101,19 +109,29 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
+        # --- 住所分割 ---
         addr1, addr2 = split_address(addr_raw)
-        phone_join   = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
+
+        # --- 電話の正規化・連結 ---
+        phone_join = normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
+
+        # --- 部署 2分割 ---
         dept1, dept2 = split_department(dept)
 
-        full_name        = f"{last}{first}"
-        last_kana        = ensure_katakana(to_katakana_guess(last))
-        first_kana       = ensure_katakana(to_katakana_guess(first))
-        full_name_kana   = ensure_katakana(f"{last_kana}{first_kana}") if (last_kana or first_kana) else ""
-        company_kana     = _company_kana_guess(company)
+        # --- 姓名・かな（カタカナ強制） ---
+        full_name = f"{last}{first}"
+        last_kana  = ensure_katakana(to_katakana_guess(last))
+        first_kana = ensure_katakana(to_katakana_guess(first))
+        full_name_kana = ensure_katakana(f"{last_kana}{first_kana}") if (last_kana or first_kana) else ""
 
+        # --- 会社名かな（オーバーライド辞書→推測、最終カタカナ） ---
+        company_kana = _company_kana_guess(company)
+
+        # --- 空防止 ---
         if not company.strip():
             company = company_raw.strip()
 
+        # --- メモ/備考 ---
         flags = _iter_extra_flags(reader.fieldnames or [], row)
         memo = ["", "", "", "", ""]
         biko = ""
@@ -123,30 +141,38 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             else:
                 biko += (("\n" if biko else "") + hdr)
 
+        # === ここから 61 列を厳密に並べる ===
         out_row: List[str] = [
+            # 1..12
             last, first,
             last_kana, first_kana,
             full_name, full_name_kana,
             "", "", "",
             "", "", "",
 
+            # 13..21 自宅
             "", "", "", "", "",
             "", "", "", "",
 
+            # 22..30 会社
             postcode, addr1, addr2, "",
             phone_join, "", email,
             url, "",
 
+            # 31..39 その他
             "", "", "", "", "", "", "", "",
 
+            # 40..48 会社名/部署/役職/連名
             company_kana, company,
             to_zenkaku(dept1), to_zenkaku(dept2),
             to_zenkaku(title),
             "", "", "", "",
 
+            # 49..56 メモ/備考
             memo[0], memo[1], memo[2], memo[3], memo[4],
             biko, "", "",
 
+            # 57..61 個人属性
             "", "", "", "", ""
         ]
 
@@ -155,6 +181,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
 
         rows_out.append(out_row)
 
+    # --- 書き出し ---
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(ATENA_HEADERS)
