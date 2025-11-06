@@ -6,13 +6,20 @@ import json
 import os
 import re
 import unicodedata
-from typing import List
+from typing import List, Tuple, Any, Dict
 
-__version__ = "v1.6"
+__version__ = "v1.7"
 __meta__ = {
-    "features": ["to_zenkaku", "normalize_block_notation", "load_bldg_words"],
-    "normalize_block_notation": ["丁目/番地/番/号/の → -", "全角記号・空白の整理"],
+    "features": [
+        "to_zenkaku",
+        "normalize_block_notation",
+        "load_bldg_words (array or {version,words})",
+        "bldg_words_version()",
+    ],
 }
+
+# 内部にロードした辞書版を保持（配列JSONの場合は None）
+_BLDG_VERSION: str | None = None
 
 # --- NFKC 全角化 ---
 def to_zenkaku(s: str) -> str:
@@ -28,7 +35,7 @@ _DEF_REPLACERS = [
     (r"番", "-"),
     (r"号", "-"),
     (r"の", "-"),               # 例: 1の2 → 1-2
-    (r"－", "-"),               # 全角マイナス/ダッシュ類を半角ハイフンに
+    (r"－", "-"),               # 全角記号→半角ハイフン
     (r"[‐‒–—―ｰ−]", "-"),
     (r"-{2,}", "-"),            # 連続ハイフンの圧縮
     (r"(^-|-$)", ""),           # 先頭末尾のハイフン除去
@@ -46,36 +53,61 @@ def normalize_block_notation(s: str) -> str:
         x = re.sub(pat, rep, x)
     return x
 
-# --- 建物語辞書ロード ---
+def _candidate_paths(path: str | None) -> list[str]:
+    c: list[str] = []
+    if path:
+        c.append(path)
+    here = os.path.dirname(os.path.abspath(__file__))   # .../utils
+    root = os.path.dirname(here)                         # プロジェクトルート想定
+    c.append(os.path.join(root, "data", "bldg_words.json"))
+    c.append(os.path.join(here, "bldg_words.json"))     # 開発救済
+    return c
+
+def _dedup_nonempty(items: list[Any]) -> list[str]:
+    seen = set()
+    out: list[str] = []
+    for w in items:
+        s = str(w).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
 def load_bldg_words(path: str | None = None) -> List[str]:
     """
-    data/bldg_words.json を読み込む。
-    見つからない/パース不能の時は [] を返す（呼び出し側でフォールバック）。
+    建物語辞書を読み込む。
+    - 旧形式: JSONが配列  -> そのまま語リスト
+    - 新形式: {"version": "...", "words": [ ... ]} -> words を返し、内部に版を記録
+    見つからない/パース不能の時は [] を返す（呼び出し側がフォールバック）。
     """
-    candidates = []
-    if path:
-        candidates.append(path)
-    here = os.path.dirname(os.path.abspath(__file__))  # .../utils
-    root = os.path.dirname(here)                        # プロジェクトルート想定
-    candidates.append(os.path.join(root, "data", "bldg_words.json"))
-    candidates.append(os.path.join(here, "bldg_words.json"))  # 開発時の救済
+    global _BLDG_VERSION
+    _BLDG_VERSION = None
 
-    for p in candidates:
+    for p in _candidate_paths(path):
         try:
             if os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
+
+                # 新形式（オブジェクト）
+                if isinstance(data, dict):
+                    ver = str(data.get("version") or "").strip() or None
+                    words = data.get("words")
+                    if isinstance(words, list):
+                        _BLDG_VERSION = ver
+                        return _dedup_nonempty(words)
+
+                # 旧形式（配列）
                 if isinstance(data, list):
-                    out = [str(w) for w in data if isinstance(w, (str, int, float))]
-                    # 重複・空除去
-                    seen = set()
-                    res = []
-                    for w in out:
-                        w = str(w).strip()
-                        if w and w not in seen:
-                            seen.add(w)
-                            res.append(w)
-                    return res
+                    return _dedup_nonempty(data)
         except Exception:
             continue
     return []
+
+def bldg_words_version() -> str | None:
+    """
+    直近に load_bldg_words() が読み込んだ辞書のバージョンを返す。
+    - 新形式のJSONで 'version' があればその値
+    - 旧形式（配列のみ）の場合は None
+    """
+    return _BLDG_VERSION
