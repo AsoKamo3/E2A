@@ -17,6 +17,9 @@ import re
 import unicodedata
 from typing import Iterable, List, Optional, Sequence, Tuple
 
+# モジュールバージョン
+__version__ = "v1.0.1"
+
 # NOTE:
 #   We only import the utilities we actually use here.
 #   normalize_block_notation: 全角/半角混在の「丁目・番・号」などのブロック表記を正規化
