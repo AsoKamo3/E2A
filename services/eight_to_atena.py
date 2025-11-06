@@ -1,5 +1,9 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.27
+# - 姓かな / 名かな / 会社名かな を自動付与
+# - ★ 姓名かな = 姓かな + 名かな を出力
+# - 住所分割、郵便番号整形、全角ワイド化、電話（最長一致/特番/欠落0補正）対応
+
 from __future__ import annotations
 
 import io
@@ -10,9 +14,10 @@ from typing import List
 
 from converters.address import split_address
 from utils.textnorm import to_zenkaku_wide, normalize_postcode
-from utils.jp_area_codes import AREA_CODES, __version__ as AREACODE_VER  # 参照のみ（/healthz表示は app.py 側）
+from utils.jp_area_codes import AREA_CODES
+from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.25"
+__version__ = "v2.27"
 
 ATENA_HEADERS: List[str] = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
@@ -58,25 +63,11 @@ def _split_department_half(s: str) -> tuple[str, str]:
 # ====== 電話整形（最長一致＋欠落0補正＋携帯3-4-4） ======
 _MOBILE_PREFIXES = ("070", "080", "090")
 
-def _digits_ascii(s: str) -> str:
+def _digits(s: str) -> str:
     """全角/半角を問わず『数字だけ』を抽出（Unicodeの数字もOK）。"""
     return "".join(ch for ch in (s or "") if ch.isdigit())
 
-def _is_service_or_special(d: str) -> bool:
-    """0120, 0800, 0570, 050 等はそのままにする（体裁だけ）。"""
-    return d.startswith(("0120", "0800", "0570", "050"))
-
-def _format_mobile(d: str) -> str:
-    # 11桁携帯 → 3-4-4
-    if len(d) == 11:
-        return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
-    # 10桁で先頭0欠落（70/80/90）→ 0を補い 3-4-4
-    if len(d) == 10 and d.startswith(("70","80","90")):
-        d = "0" + d
-        return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
-    return d
-
-def _format_by_area_longest(d: str) -> str:
+def _format_by_area(d: str) -> str:
     """'0' から始まる固定電話 d を AREA_CODES の最長一致でハイフン挿入。"""
     ac = None
     for code in AREA_CODES:  # 5桁→2桁の順に最長一致
@@ -108,34 +99,33 @@ def _normalize_one_phone(raw: str) -> str:
     """単一フィールドを正規化。空or無効は空文字で返す。"""
     if not raw or not raw.strip():
         return ""
-    d = _digits_ascii(raw)
+    d = _digits(raw)
     if not d:
         return ""
 
-    # サービス/特番系は体裁だけ（0120/0800/0570/050 ...）
-    if _is_service_or_special(d):
-        # 0120-XXX-XXX / 0800-XXX-XXXX / 0570-XXX-XXX / 050-XXXX-XXXX （おおまか体裁）
-        if d.startswith("0120") and len(d) == 10:
-            return f"{d[0:4]}-{d[4:7]}-{d[7:10]}"
-        if d.startswith("0800") and len(d) == 11:
-            return f"{d[0:4]}-{d[4:7]}-{d[7:11]}"
-        if d.startswith("0570") and len(d) == 10:
-            return f"{d[0:4]}-{d[4:7]}-{d[7:10]}"
-        if d.startswith("050") and len(d) == 11:
-            return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
-        return d  # 長さが想定外ならそのまま
-
-    # 携帯系（11桁 or 10桁で70/80/90始まり）
+    # 携帯（11桁）または 10桁で先頭0欠落（70/80/90）
     if (len(d) == 11 and d.startswith(_MOBILE_PREFIXES)) or (len(d) == 10 and d.startswith(("70","80","90"))):
-        return _format_mobile(d)
+        if len(d) == 10:  # 0欠落
+            d = "0" + d
+        return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
 
-    # 固定電話：9桁は「先頭0欠落」とみなして補う（例: 3-5724-8523 → 03-5724-8523）
+    # サービス/特番系（0120/0800/0570/050）
+    if d.startswith("0120") and len(d) == 10:
+        return f"{d[0:4]}-{d[4:7]}-{d[7:10]}"
+    if d.startswith("0800") and len(d) == 11:
+        return f"{d[0:4]}-{d[4:7]}-{d[7:11]}"
+    if d.startswith("0570") and len(d) == 10:
+        return f"{d[0:4]}-{d[4:7]}-{d[7:10]}"
+    if d.startswith("050") and len(d) == 11:
+        return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
+
+    # 固定：9桁は「先頭0欠落」とみなして補う（例: 3-5724-8523 → 03-5724-8523）
     if len(d) == 9:
         d = "0" + d
 
     # 固定の標準は 10桁（0始まり）。最長一致で体裁。
     if len(d) == 10 and d.startswith("0"):
-        return _format_by_area_longest(d)
+        return _format_by_area(d)
 
     # それ以外（桁不明など）は安全側で元数字のまま
     return d
@@ -161,7 +151,31 @@ def _normalize_phone(*nums: str) -> str:
 
     return ";".join(uniq)
 
-# ====== 変換本体 ======
+# ====== 会社名かな：会社種別語を除去してから推測 ======
+_COMPANY_TYPES = [
+    "株式会社","（株）","(株)","㈱",
+    "有限会社","(有)","（有）","㈲",
+    "合同会社","合資会社","合名会社","相互会社","清算株式会社",
+    "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
+    "特定非営利活動法人","ＮＰＯ法人","NPO法人","中間法人","有限責任中間法人","特例民法法人",
+    "学校法人","医療法人","医療法人社団","医療法人財団","宗教法人","社会福祉法人",
+    "国立大学法人","公立大学法人","独立行政法人","地方独立行政法人","特殊法人",
+    "有限責任事業組合","投資事業有限責任組合","特定目的会社","特定目的信託"
+]
+
+def _company_kana(company_name: str) -> str:
+    base = (company_name or "").strip()
+    if not base:
+        return ""
+    # 会社種別語・括弧をざっくり除去（元データは別フィールドで保持するためOK）
+    for t in _COMPANY_TYPES:
+        base = base.replace(t, "")
+    # ノイズ記号（前後）を軽く除去
+    base = re.sub(r"^[\s　\-‐─―－()\[\]【】]+", "", base)
+    base = re.sub(r"[\s　\-‐─―－()\[\]【】]+$", "", base)
+    return _to_kata(base)
+
+# ====== 本体 ======
 def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     # CSV/TSV 自動判定
     buf = io.StringIO(csv_text)
@@ -204,7 +218,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         else:
             addr1_raw, addr2_raw = addr_raw, ""
 
-        # 電話（← ここがポイント：新しい正規化を使用）
+        # 電話
         phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
         # 部署（前半/後半）
@@ -218,12 +232,14 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         dept2 = to_zenkaku_wide(dept2_raw)
         title = to_zenkaku_wide(title_raw)
 
-        # 姓名（かなは現状空）
+        # かな自動付与
+        last_kana  = _to_kata(last) or ""      # 姓かな
+        first_kana = _to_kata(first) or ""     # 名かな
+        company_kana = _company_kana(company) or ""  # 会社名かな
+
+        # ★ 姓名かな = 姓かな + 名かな
         full_name = f"{last}{first}"
-        last_kana = ""
-        first_kana = ""
-        full_name_kana = ""
-        company_kana = ""
+        full_name_kana = f"{last_kana}{first_kana}"
 
         # メモ/備考（固定以降の '1' を拾う）
         fn_clean = reader.fieldnames or []
