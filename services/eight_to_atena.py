@@ -1,4 +1,4 @@
-# services/eight_to_atena.py
+# services/eight_to_atena.py　
 # Eight CSV/TSV → 宛名職人CSV 変換本体（I/Oと行マッピング）
 # - 列の並びは ATENA_HEADERS と厳密一致（61列）
 # - 部署名の 2 分割（utils.textnorm.split_department）
