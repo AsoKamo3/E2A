@@ -1,181 +1,177 @@
-# utils/textnorm.py
-# v1.15
-# - BUGFIX: stray 'r' による NameError を修正
-# - app.py/eight_to_atena.py が参照する関数だけを厳選し提供
-# - 各辞書のバージョン問い合わせは存在しない/壊れている場合でもフェールセーフ
-
+# -*- coding: utf-8 -*-
+# utils/textnorm.py v1.16
+# 文字種正規化・番地表記正規化・辞書ロード＆辞書バージョン問い合わせ
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import List, Any, Optional
 
-__version__ = "v1.15"
+__version__ = "v1.16"
+__meta__ = {
+    "features": [
+        "to_zenkaku (NFKC)",
+        "to_zenkaku_wide (ASCII→全角：数字/英字/記号/スペース)",
+        "normalize_block_notation",
+        "normalize_postcode (###-####・不正は空)",
+        "load_bldg_words (array or {version,words})",
+        "bldg_words_version()",
+        "corp_terms_version()",
+        "company_overrides_version()",
+    ],
+}
 
-# ---------------------------------------------------------------------
-# 内部: パスと安全ロード
-# ---------------------------------------------------------------------
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_DATA_DIR = _BASE_DIR / "data"
+# 内部保持用バージョンキャッシュ
+_BLDG_VERSION: Optional[str] = None
+_CORP_TERMS_VERSION: Optional[str] = None
+_COMPANY_OVERRIDES_VERSION: Optional[str] = None
 
-_BLDG_WORDS_PATH = _DATA_DIR / "bldg_words.json"            # {"version":"v1.0.0", "words":[...]}
-_CORP_TERMS_PATH = _DATA_DIR / "corp_terms.json"            # {"version":"v1.0.1", "terms":[...]}
-_COMPANY_OVR_PATH = _DATA_DIR / "company_kana_overrides.json"  # {"version":"v1.x", "overrides":{...}}
-
-def _load_json_safe(path: Path, default: Any) -> Any:
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-# ---------------------------------------------------------------------
-# 文字種・全角化
-# ---------------------------------------------------------------------
-def to_zenkaku(s: Optional[str]) -> str:
-    """半角→全角（記号やラテン文字・数字もふくめ NFKC 正規化）"""
+# ----------------------------
+# 基本正規化
+# ----------------------------
+def to_zenkaku(s: str) -> str:
+    """NFKC 正規化（None 安全化）。"""
     if s is None:
         return ""
-    return unicodedata.normalize("NFKC", str(s))
+    return unicodedata.normalize("NFKC", s)
 
-# ---------------------------------------------------------------------
-# 郵便番号
-# ---------------------------------------------------------------------
-# ★ ここが v1.13 で壊れていた箇所（stray 'r'）→ 正しい正規表現に修正
-_POST_RE = re.compile(r"(\d{3})[-\u2212\u30FC\u2010-\u2015\uFE63\uFF0D]?(\d{4})")
-
-def normalize_postcode(s: Optional[str]) -> str:
-    """郵便番号を NNN-NNNN に整える。見つからない場合は空文字。"""
-    if not s:
-        return ""
-    txt = unicodedata.normalize("NFKC", str(s))
-    m = _POST_RE.search(txt)
-    if not m:
-        return ""
-    return f"{m.group(1)}-{m.group(2)}"
-
-# ---------------------------------------------------------------------
-# ブロック/番地表記のハイフン正規化（軽量）
-# ---------------------------------------------------------------------
-# 半角・全角・ダッシュ系のゆらぎを半角ハイフンに寄せる
-_DASH_CHARS = "-\u2212\u30FC\u2010\u2011\u2012\u2013\u2014\u2015\uFE63\uFF0D"
-_DASH_CLASS = f"[{_DASH_CHARS}]"
-
-def normalize_block_notation(s: Optional[str]) -> str:
+def to_zenkaku_wide(s: str) -> str:
     """
-    番地・号などのダッシュを半角に統一。住所全体を壊さない軽量処理。
-    例: '1－2–3' → '1-2-3'
+    ASCII 可視文字(0x21-0x7E)とスペースを『全角』に寄せる。
+    例: "ABC 12-3" → "ＡＢＣ　１２－３"
     """
     if not s:
         return ""
-    txt = unicodedata.normalize("NFKC", str(s))
-    return re.sub(_DASH_CLASS, "-", txt)
-
-# ---------------------------------------------------------------------
-# 電話番号（軽量）
-# ---------------------------------------------------------------------
-# +81, 0X, 内線の簡易吸収。厳格な地域判定は行わず、一般的な 10/11 桁に整形。
-_DIGITS_RE = re.compile(r"\d+")
-_PLUS81_RE = re.compile(r"^\+?81")
-
-def _only_digits(s: str) -> str:
-    return "".join(_DIGITS_RE.findall(s))
-
-def normalize_phone(s: Optional[str]) -> str:
-    """
-    電話番号を軽量正規化。
-    - 全角→半角/NFKC
-    - 国番号 +81 → 先頭 0 に寄せる
-    - 10桁 → 0AA-BBBB-CCCC / 11桁 → 0AAA-BBBB-CCCC（目安）
-    - それ以外は数字のみ返す（桁不定形はハイフン付与しない）
-    """
-    if not s:
-        return ""
-    txt = unicodedata.normalize("NFKC", str(s)).strip()
-
-    # 国番号形式を 0 始まりに寄せる
-    if _PLUS81_RE.match(txt):
-        # +81-3-... / +81(0)90-... などを 0 始まりへ
-        txt = _PLUS81_RE.sub("0", txt)
-        txt = txt.replace("(0)", "0")
-
-    digits = _only_digits(txt)
-
-    # 代表ケース 10/11 桁
-    if len(digits) == 10:
-        return f"{digits[0:2]}-{digits[2:6]}-{digits[6:10]}" if digits.startswith("0") else f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
-    if len(digits) == 11:
-        return f"{digits[0:3]}-{digits[3:7]}-{digits[7:11]}"
-
-    # 桁不一致は数字のみ（過剰な誤判定を避ける）
-    return digits
-
-# ---------------------------------------------------------------------
-# 建物語彙（軽量ローダ）
-# ---------------------------------------------------------------------
-# 期待形式: {"version":"v1.0.0","words":["ビル","マンション",...]}
-_BLDG_WORDS: List[str] = []
-_BLDG_WORDS_VERSION: str = "unknown"
-
-def load_bldg_words() -> List[str]:
-    """建物語彙の配列（存在しなければ空配列）。"""
-    global _BLDG_WORDS, _BLDG_WORDS_VERSION
-    if _BLDG_WORDS:
-        return _BLDG_WORDS
-    obj = _load_json_safe(_BLDG_WORDS_PATH, {})
-    if isinstance(obj, dict):
-        _BLDG_WORDS_VERSION = str(obj.get("version", "unknown"))
-        words = obj.get("words") or obj.get("list") or []
-        if isinstance(words, list):
-            _BLDG_WORDS = [str(w) for w in words]
+    out = []
+    for ch in s:
+        oc = ord(ch)
+        if ch == " ":
+            out.append("\u3000")
+        elif 0x21 <= oc <= 0x7E:
+            out.append(chr(oc + 0xFEE0))
         else:
-            _BLDG_WORDS = []
-    else:
-        _BLDG_WORDS = []
-        _BLDG_WORDS_VERSION = "unknown"
-    return _BLDG_WORDS
+            out.append(ch)
+    return "".join(out)
 
-def bldg_words_version() -> str:
-    """建物語彙の辞書版を返す（存在しなければ 'unknown'）。"""
-    global _BLDG_WORDS_VERSION
-    if not _BLDG_WORDS:
-        load_bldg_words()
-    return _BLDG_WORDS_VERSION
+# ----------------------------
+# 郵便番号・ブロック表記
+# ----------------------------
+def normalize_postcode(s: str) -> str:
+    """
+    郵便番号を ###-#### で返す（7桁以外は空）。
+    入力は NFKC 後に数字のみ抽出。
+    """
+    if not s:
+        return ""
+    x = to_zenkaku(s)
+    digits = "".join(ch for ch in x if ch.isdigit())
+    if len(digits) != 7:
+        return ""
+    return digits[:3] + "-" + digits[3:]
 
-# ---------------------------------------------------------------------
-# corp_terms / company_overrides のバージョン照会（app の表示用）
-# ---------------------------------------------------------------------
-def corp_terms_version() -> str:
-    obj = _load_json_safe(_CORP_TERMS_PATH, {})
-    if isinstance(obj, dict) and "version" in obj:
-        return str(obj.get("version"))
-    return "unknown"
-
-def company_overrides_version() -> str:
-    obj = _load_json_safe(_COMPANY_OVR_PATH, {})
-    if isinstance(obj, dict):
-        if "version" in obj:
-            return str(obj.get("version"))
-        # 旧形式 { "会社名": "カナ", "version": "..."} に配慮
-        v = obj.get("version")
-        return str(v) if v is not None else "unknown"
-    return "unknown"
-
-# ---------------------------------------------------------------------
-# エクスポート
-# ---------------------------------------------------------------------
-__all__ = [
-    "__version__",
-    # text
-    "to_zenkaku",
-    "normalize_block_notation",
-    "normalize_postcode",
-    "normalize_phone",
-    # dicts
-    "load_bldg_words",
-    "bldg_words_version",
-    "corp_terms_version",
-    "company_overrides_version",
+# デフォルト置換ルール（丁目・番地・番・号・の・各種ダッシュ等）
+_DEF_REPLACERS = [
+    (r"\s+", ""),
+    (r"丁目", "-"),
+    (r"番地", "-"),
+    (r"番", "-"),
+    (r"号", "-"),
+    (r"の", "-"),
+    (r"－", "-"),
+    (r"[‐‒–—―ｰ−]", "-"),
+    (r"-{2,}", "-"),
+    (r"(^-|-$)", ""),
 ]
+
+def normalize_block_notation(s: str) -> str:
+    """町丁目・番地・号などのブロック表記をハイフン連結へ寄せる簡易正規化。"""
+    if not s:
+        return ""
+    x = to_zenkaku(s)
+    for pat, rep in _DEF_REPLACERS:
+        x = re.sub(pat, rep, x)
+    return x
+
+# ----------------------------
+# data/bldg_words.json 読み込み
+# ----------------------------
+def _candidate_paths(path: str | None, filename: str) -> list[str]:
+    c: list[str] = []
+    if path:
+        c.append(path)
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
+    c.append(os.path.join(root, "data", filename))  # /.../data/xxx.json
+    c.append(os.path.join(here, filename))          # utils/xxx.json（開発用）
+    return c
+
+def _dedup_nonempty(items: list[Any]) -> list[str]:
+    seen = set()
+    out: list[str] = []
+    for w in items:
+        s = str(w).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+def load_bldg_words(path: str | None = None) -> List[str]:
+    """
+    data/bldg_words.json を読み込む。
+      - list 形式: ["…","…"]
+      - dict 形式: {"version":"v1.0.0","words":[…]}
+    """
+    global _BLDG_VERSION
+    _BLDG_VERSION = None
+    for p in _candidate_paths(path, "bldg_words.json"):
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    ver = str(data.get("version") or "").strip() or None
+                    words = data.get("words")
+                    if isinstance(words, list):
+                        _BLDG_VERSION = ver
+                        return _dedup_nonempty(words)
+                if isinstance(data, list):
+                    return _dedup_nonempty(data)
+        except Exception:
+            continue
+    return []
+
+def bldg_words_version() -> Optional[str]:
+    """直近に load_bldg_words() が読み込んだバージョン（dict形式時）を返す。"""
+    return _BLDG_VERSION
+
+# ----------------------------
+# data/corp_terms.json / data/company_kana_overrides.json のバージョン照会
+# ----------------------------
+def _load_json_version(filename: str) -> Optional[str]:
+    for p in _candidate_paths(None, filename):
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    ver = data.get("version")
+                    if isinstance(ver, str) and ver.strip():
+                        return ver.strip()
+                # list 形式には version が無い想定
+        except Exception:
+            continue
+    return None
+
+def corp_terms_version() -> Optional[str]:
+    """data/corp_terms.json の version を返す（無ければ None）。"""
+    global _CORP_TERMS_VERSION
+    _CORP_TERMS_VERSION = _load_json_version("corp_terms.json")
+    return _CORP_TERMS_VERSION
+
+def company_overrides_version() -> Optional[str]:
+    """data/company_kana_overrides.json の version を返す（無ければ None）。"""
+    global _COMPANY_OVERRIDES_VERSION
+    _COMPANY_OVERRIDES_VERSION = _load_json_version("company_kana_overrides.json")
+    return _COMPANY_OVERRIDES_VERSION
