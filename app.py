@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 v1.16
+# Eight → 宛名職人 変換 v1.17
 # - / と /healthz に app / converter / address / textnorm / kana / building_dict / areacode_dict
 #   ＋ furigana_engine / furigana_detail / python / sys.executable / pykakasi の find_spec 結果などを表示
 
@@ -15,7 +15,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.16"
+VERSION = "v1.17"
 
 INDEX_HTML = """
 <!doctype html>
@@ -181,7 +181,7 @@ def healthz():
         executable=sys.executable,
         pykakasi_spec=mv["PYKAKASI_SPEC"],
         pykakasi_version=mv["PYKAKASI_VER"],
-        sys_path=sys.path[:6],  # 最初の数個だけ表示
+        sys_path=sys.path[:6],
         env_FURIGANA_ENABLED=os.environ.get("FURIGANA_ENABLED"),
     ), 200
 
