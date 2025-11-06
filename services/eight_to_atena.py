@@ -1,287 +1,200 @@
-# services/eight_to_atena.py
-# v2.31
-# 目的：
-#  - Eightエクスポート（CSV/TSV）テキストを受け取り、
-#    「姓かな・名かな・姓名かな・会社名かな（いずれもカタカナ）」を付与して CSV で返す
-#  - 会社名かなは company_kana_overrides.json を最優先
-#  - 法人格は corp_terms.json を参照（壊れていればフェールセーフ）
-#  - 文字種整形や住所関連はこのモジュールでは行わない（textnorm に委譲）
-#
-# app.py v1.18 が参照する公開API：
-#  - __version__
-#  - convert_eight_csv_text_to_atena_csv_text(text: str) -> str
+# -*- coding: utf-8 -*-
+"""
+Eight → 宛名職人 変換コア
+- v2.32: 宛名職人CSVの固定ヘッダを常に出力するように修正（Eightヘッダをパススルーしない）
+         入力ゆらぎに強い列取得（存在しない列は空文字）/ 郵便番号・電話の軽整形
+
+注意:
+- ここでは「出力フォーマットの厳守」を最優先。
+- Kana 付与の高度化や会社名カナのオーバーライドは別モジュール（utils.kana / textnorm）側のまま。
+- まずは Eight列 → 宛名職人列 への最低限のマッピングで“必ず宛名職人列ヘッダを出力”します。
+
+依存:
+- utils.textnorm: normalize_postcode, normalize_phone
+"""
 
 from __future__ import annotations
-import os
-import io
+
+__version__ = "v2.32"
+
 import csv
-import json
-import unicodedata
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+import io
+from typing import Dict, List, Optional
 
-# textnorm の関数は将来拡張用に一部だけ利用（現状の変換では直接未使用でもAPI整合のため残置）
-from utils.textnorm import (
-    to_zenkaku,
-    normalize_block_notation,
-    normalize_postcode,
-    normalize_phone,
-    load_bldg_words,
-    bldg_words_version,
-)
+from utils.textnorm import normalize_postcode, normalize_phone
 
-__version__ = "v2.31"
-KANA_PIPELINE_VERSION = "v1.0.0"
-
-# ------------------------------------------------------------
-# データパス
-# ------------------------------------------------------------
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_DATA_DIR = _BASE_DIR / "data"
-
-_COMPANY_OVERRIDES_PATH = _DATA_DIR / "company_kana_overrides.json"
-_CORP_TERMS_PATH = _DATA_DIR / "corp_terms.json"
-
-# ------------------------------------------------------------
-# フェールセーフ（法人格）
-# ------------------------------------------------------------
-_FALLBACK_CORP_TERMS = [
-    "株式会社", "合同会社", "有限会社", "合資会社", "合名会社", "相互会社",
-    "ＮＰＯ法人", "独立行政法人", "特定非営利活動法人", "地方独立行政法人",
-    "医療法人", "医療法人財団", "医療法人社団",
-    "財団法人", "一般財団法人", "公益財団法人",
-    "社団法人", "一般社団法人", "公益社団法人",
-    "社会福祉法人", "学校法人", "公立大学法人", "国立大学法人",
-    "宗教法人", "中間法人", "特殊法人", "特例民法法人",
-    "特定目的会社", "特定目的信託",
-    "有限責任事業組合", "有限責任中間法人",
+# 宛名職人の出力ヘッダ（以前あなたが提示した並びを採用）
+ATENA_HEADERS: List[str] = [
+    "姓", "名", "姓かな", "名かな",
+    "姓名", "姓名かな",
+    "ミドルネーム", "ミドルネームかな",
+    "敬称", "ニックネーム", "旧姓", "宛先",
+    "自宅〒", "自宅住所1", "自宅住所2", "自宅住所3",
+    "自宅電話", "自宅IM ID", "自宅E-mail", "自宅URL", "自宅Social",
+    "会社〒", "会社住所1", "会社住所2", "会社住所3",
+    "会社電話", "会社IM ID", "会社E-mail",
 ]
 
-def _load_json_safe(p: Path, default):
-    try:
-        with p.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
+# Eight 側で“ありそう”な列名の候補（存在チェックして拾う）
+# ※ 入力のゆらぎに合わせて随時ここを増やせます（英語エクスポート等）
+CANDIDATE = {
+    "sei": ["姓", "名字", "氏", "姓（漢字）", "Last Name", "Family Name"],
+    "mei": ["名", "名前", "名（漢字）", "First Name", "Given Name"],
+    "sei_kana": ["姓カナ", "せいカナ", "姓かな", "セイ"],
+    "mei_kana": ["名カナ", "めいカナ", "名かな", "メイ"],
+    "nickname": ["ニックネーム", "呼称", "呼び名", "Nickname"],
+    "honorific": ["敬称"],
+    "old_surname": ["旧姓"],
+    "addr_zip_home": ["自宅郵便番号", "郵便番号", "自宅〒", "Zip", "ZIP", "Postcode"],
+    "addr_home": ["自宅住所", "住所", "住所1", "Address", "Address1"],
+    "addr_home2": ["自宅住所2", "住所2", "Address2"],
+    "addr_home3": ["自宅住所3", "住所3", "Address3"],
+    "tel_home": ["自宅電話", "電話（自宅）", "TEL（自宅）", "Phone(Home)"],
+    "email_home": ["自宅E-mail", "メール（自宅）", "E-mail(Home)", "メールアドレス"],
+    "url_home": ["自宅URL", "URL", "ホームページ"],
+    "social_home": ["自宅Social", "SNS", "Twitter", "X", "Facebook", "Instagram"],
 
-# ------------------------------------------------------------
-# オーバーライド辞書 / 法人格辞書
-# ------------------------------------------------------------
-_COMPANY_OVERRIDE_MAP: Dict[str, str] = {}
-_COMPANY_OVERRIDE_VERSION = "unknown"
+    "company": ["会社名", "勤務先", "会社", "Organization", "Company"],
+    "addr_zip_company": ["会社郵便番号", "会社〒", "勤務先郵便番号"],
+    "addr_company": ["会社住所", "会社住所1", "勤務先住所", "会社所在地", "Office Address"],
+    "addr_company2": ["会社住所2", "勤務先住所2", "Office Address2"],
+    "addr_company3": ["会社住所3", "勤務先住所3", "Office Address3"],
+    "tel_company": ["会社電話", "電話（会社）", "TEL（会社）", "Phone(Work)"],
+    "email_company": ["会社E-mail", "メール（会社）", "E-mail(Work)"],
+    "im_home": ["自宅IM ID", "IM(Home)"],
+    "im_company": ["会社IM ID", "IM(Work)"],
+    "title": ["役職", "肩書", "Title"],
+    "dept": ["部署", "Department"],
+}
 
-def _load_company_overrides() -> None:
-    global _COMPANY_OVERRIDE_MAP, _COMPANY_OVERRIDE_VERSION
-    obj = _load_json_safe(_COMPANY_OVERRIDES_PATH, {})
-    if isinstance(obj, dict) and obj:
-        _COMPANY_OVERRIDE_VERSION = obj.get("version", "unknown")
-        mapping = obj.get("overrides")
-        # { "overrides": { "会社名": "カナ", ... } } を推奨
-        if isinstance(mapping, dict):
-            _COMPANY_OVERRIDE_MAP = {str(k): str(v) for k, v in mapping.items()}
-        else:
-            # 旧形式 { "会社名": "カナ", "version": "..."} も許容
-            _COMPANY_OVERRIDE_MAP = {
-                str(k): str(v) for k, v in obj.items() if k not in ("version",)
-            }
-    else:
-        _COMPANY_OVERRIDE_MAP = {}
-        _COMPANY_OVERRIDE_VERSION = "unknown"
 
-_load_company_overrides()
+def _pick(row: Dict[str, str], keys: List[str]) -> str:
+    """候補キー列から最初に見つかった値を返す（無ければ空）"""
+    for k in keys:
+        if k in row and row[k] is not None:
+            v = str(row[k]).strip()
+            if v != "":
+                return v
+    return ""
 
-_CORP_TERMS_OBJ = _load_json_safe(_CORP_TERMS_PATH, {})
-_CORP_TERMS_VERSION = _CORP_TERMS_OBJ.get("version", "unknown") if isinstance(_CORP_TERMS_OBJ, dict) else "unknown"
-if isinstance(_CORP_TERMS_OBJ, dict) and isinstance(_CORP_TERMS_OBJ.get("terms"), list):
-    _CORP_TERMS: List[str] = [str(t) for t in _CORP_TERMS_OBJ["terms"]]
-else:
-    _CORP_TERMS = _FALLBACK_CORP_TERMS
-    _CORP_TERMS_VERSION = "fallback"
 
-_CORP_TERMS_SORTED = sorted(_CORP_TERMS, key=len, reverse=True)
-
-# ------------------------------------------------------------
-# かな変換（pykakasi 使用。なければフォールバック）
-# ------------------------------------------------------------
-try:
-    from pykakasi import kakasi  # type: ignore
-    _KAKASI_OK = True
-except Exception as e:
-    kakasi = None  # type: ignore
-    _KAKASI_OK = False
-    _KAKASI_ERR = f"pykakasi import error: {e}"
-else:
-    _KAKASI_ERR = "pykakasi ok"
-
-def _hiragana_to_katakana(s: str) -> str:
-    out = []
-    for ch in s or "":
-        code = ord(ch)
-        if 0x3041 <= code <= 0x3096:  # ひらがな -> カタカナ
-            out.append(chr(code + 0x60))
-        else:
-            out.append(ch)
-    return "".join(out)
-
-def _force_katakana(s: str) -> str:
-    s = "" if s is None else str(s)
-    s = unicodedata.normalize("NFKC", s)
-    return _hiragana_to_katakana(s)
-
-def _pykakasi_to_hira(s: str) -> str:
-    if not _KAKASI_OK or kakasi is None:
-        return unicodedata.normalize("NFKC", s or "")
-    kks = kakasi()
-    kks.setMode("J", "H")  # 漢字→ひらがな
-    kks.setMode("K", "H")  # カタカナ→ひらがな
-    kks.setMode("H", "H")  # ひらがな維持
-    conv = kks.getConverter()
-    return conv.do(s or "")
-
-def _name_to_katakana(s: str) -> str:
-    return _force_katakana(_pykakasi_to_hira(s or ""))
-
-def _strip_corp_term_prefix(company: str) -> Tuple[str, str]:
-    if not company:
-        return "", ""
-    s = unicodedata.normalize("NFKC", company)
-    for term in _CORP_TERMS_SORTED:
-        if s.startswith(term):
-            return term, s[len(term):].lstrip()
-    # スペースの揺れにも最低限対応
-    s_no_space = s.replace(" ", "")
-    for term in _CORP_TERMS_SORTED:
-        if s_no_space.startswith(term):
-            return term, s_no_space[len(term):].lstrip()
-    return "", s
-
-def _company_to_katakana(company: str) -> str:
-    if not company:
+def _full_name(sei: str, mei: str) -> str:
+    s = (sei or "").strip()
+    m = (mei or "").strip()
+    if not s and not m:
         return ""
-    key = unicodedata.normalize("NFKC", company)
-    # オーバーライド最優先
-    if key in _COMPANY_OVERRIDE_MAP:
-        return _force_katakana(_COMPANY_OVERRIDE_MAP[key])
+    # 日本式：姓 名
+    return f"{s}{(' ' if s and m else '')}{m}"
 
-    # 法人格を外して本体のみ読む
-    _, body = _strip_corp_term_prefix(key)
-    kana_body = _force_katakana(_pykakasi_to_hira(body or key))
-    return kana_body
 
-# ------------------------------------------------------------
-# 行変換（かな付与）
-# ------------------------------------------------------------
-COL_LAST = "姓"
-COL_FIRST = "名"
-COL_LAST_KANA = "姓かな"
-COL_FIRST_KANA = "名かな"
-COL_FULL = "姓名"
-COL_FULL_KANA = "姓名かな"
-COL_COMPANY = "会社名"
-COL_COMPANY_KANA = "会社名かな"
+def _full_name_kana(sei_k: str, mei_k: str) -> str:
+    s = (sei_k or "").strip()
+    m = (mei_k or "").strip()
+    if not s and not m:
+        return ""
+    return f"{s}{(' ' if s and m else '')}{m}"
 
-def enrich_row_with_kana(row: Dict[str, str], *, enable_furigana: bool = True) -> Dict[str, str]:
-    if not isinstance(row, dict):
-        return row
 
-    def _need(v): return (v is None) or (str(v).strip() == "")
+def _normalize_postcode(s: str) -> str:
+    return normalize_postcode(s) or ""
 
-    last = str(row.get(COL_LAST) or "")
-    first = str(row.get(COL_FIRST) or "")
-    full = str(row.get(COL_FULL) or (last + first))
-    company = str(row.get(COL_COMPANY) or "")
 
-    if enable_furigana:
-        if _need(row.get(COL_LAST_KANA)):
-            row[COL_LAST_KANA] = _name_to_katakana(last) if last else ""
-        if _need(row.get(COL_FIRST_KANA)):
-            row[COL_FIRST_KANA] = _name_to_katakana(first) if first else ""
-        if _need(row.get(COL_FULL_KANA)):
-            if full:
-                row[COL_FULL_KANA] = _name_to_katakana(full)
-            elif last or first:
-                row[COL_FULL_KANA] = (row.get(COL_LAST_KANA) or "") + (row.get(COL_FIRST_KANA) or "")
-            else:
-                row[COL_FULL_KANA] = ""
-        if _need(row.get(COL_COMPANY_KANA)):
-            row[COL_COMPANY_KANA] = _company_to_katakana(company) if company else ""
-    else:
-        # フリガナ無効時は既存値を壊さず埋めない
-        row.setdefault(COL_LAST_KANA, row.get(COL_LAST_KANA) or "")
-        row.setdefault(COL_FIRST_KANA, row.get(COL_FIRST_KANA) or "")
-        row.setdefault(COL_FULL_KANA, row.get(COL_FULL_KANA) or "")
-        row.setdefault(COL_COMPANY_KANA, row.get(COL_COMPANY_KANA) or "")
+def _normalize_phone(s: str) -> str:
+    return normalize_phone(s) or ""
 
-    return row
 
-def enrich_rows(rows: List[Dict[str, str]], *, enable_furigana: Optional[bool] = None) -> List[Dict[str, str]]:
-    if enable_furigana is None:
-        enable_furigana = (os.environ.get("FURIGANA_ENABLED") == "1")
-    return [enrich_row_with_kana(dict(r), enable_furigana=enable_furigana) for r in rows]
+def _detect_delimiter(sample: str) -> str:
+    # タブ優先。TSV/Eightの混在に強め
+    if "\t" in sample and sample.count("\t") >= sample.count(","):
+        return "\t"
+    return ","
 
-# ------------------------------------------------------------
-# CSV/TSV → CSV 変換の外部公開関数（app.py が呼び出す）
-# ------------------------------------------------------------
-_KANA_COLS = [COL_LAST_KANA, COL_FIRST_KANA, COL_FULL_KANA, COL_COMPANY_KANA]
 
-def _detect_delimiter(head_line: str) -> str:
-    tabs = head_line.count("\t")
-    commas = head_line.count(",")
-    return "\t" if tabs > commas else ","
-
-def convert_eight_csv_text_to_atena_csv_text(text: str) -> str:
+def convert_eight_csv_text_to_atena_csv_text(src_text: str) -> str:
     """
-    入力：Eightエクスポート（CSV/TSVテキスト）
-    出力：CSVテキスト（カンマ区切り固定）
+    入力: Eightエクスポート（CSV/TSV, UTF-8想定）
+    出力: 宛名職人CSV（UTF-8, カンマ区切り, 固定ヘッダ ATENA_HEADERS）
     """
-    if not isinstance(text, str):
-        raise TypeError("text must be str")
+    if not isinstance(src_text, str):
+        raise ValueError("src_text is not str")
 
-    # 区切り自動判定
-    first_line = text.splitlines()[0] if text else ""
-    src_delim = _detect_delimiter(first_line)
+    # 1) 入力読み込み（区切りをざっくり判定）
+    delim = _detect_delimiter(src_text.splitlines()[0] if src_text.splitlines() else ",")
+    src = io.StringIO(src_text)
+    reader = csv.DictReader(src, delimiter=delim)
 
-    # 読み込み
-    src = io.StringIO(text)
-    reader = csv.DictReader(src, delimiter=src_delim)
-    rows = [dict(r) for r in reader]
-    headers: List[str] = list(reader.fieldnames or [])
-
-    # かな列が無ければ追加（末尾）
-    for kcol in _KANA_COLS:
-        if kcol not in headers:
-            headers.append(kcol)
-
-    # かな付与
-    enriched = enrich_rows(rows)
-
-    # 書き出し（CSV固定）
+    # 2) 出力：必ず “宛名職人ヘッダ” を書く
     out = io.StringIO()
-    writer = csv.DictWriter(out, fieldnames=headers, lineterminator="\n", extrasaction="ignore")
+    writer = csv.DictWriter(out, fieldnames=ATENA_HEADERS, extrasaction="ignore")
     writer.writeheader()
-    for r in enriched:
-        # 欠落キーは空文字で埋める
-        for h in headers:
-            if h not in r:
-                r[h] = ""
-        writer.writerow(r)
+
+    # 3) 行ごとに最低限のマッピング
+    for row in reader:
+        # --- 基本項目 ---
+        sei = _pick(row, CANDIDATE["sei"])
+        mei = _pick(row, CANDIDATE["mei"])
+        sei_kana = _pick(row, CANDIDATE["sei_kana"])
+        mei_kana = _pick(row, CANDIDATE["mei_kana"])
+        nickname = _pick(row, CANDIDATE["nickname"])
+        honor = _pick(row, CANDIDATE["honorific"])
+        old_sei = _pick(row, CANDIDATE["old_surname"])
+
+        # --- 自宅系 ---
+        zip_home = _normalize_postcode(_pick(row, CANDIDATE["addr_zip_home"]))
+        addr1_home = _pick(row, CANDIDATE["addr_home"])
+        addr2_home = _pick(row, CANDIDATE["addr_home2"])
+        addr3_home = _pick(row, CANDIDATE["addr_home3"])
+        tel_home = _normalize_phone(_pick(row, CANDIDATE["tel_home"]))
+        im_home = _pick(row, CANDIDATE["im_home"])
+        email_home = _pick(row, CANDIDATE["email_home"])
+        url_home = _pick(row, CANDIDATE["url_home"])
+        social_home = _pick(row, CANDIDATE["social_home"])
+
+        # --- 会社系 ---
+        zip_company = _normalize_postcode(_pick(row, CANDIDATE["addr_zip_company"]))
+        addr1_company = _pick(row, CANDIDATE["addr_company"])
+        addr2_company = _pick(row, CANDIDATE["addr_company2"])
+        addr3_company = _pick(row, CANDIDATE["addr_company3"])
+        tel_company = _normalize_phone(_pick(row, CANDIDATE["tel_company"]))
+        im_company = _pick(row, CANDIDATE["im_company"])
+        email_company = _pick(row, CANDIDATE["email_company"])
+
+        # 宛先は、会社名+部署+役職+姓名 などの運用も考えられるが、まずは空/既存フィールドで安全運用
+        # ここでは Eight側に「宛先」列があれば拾い、なければ空。
+        addressee = row.get("宛先", "") or ""
+
+        rec = {
+            "姓": sei,
+            "名": mei,
+            "姓かな": sei_kana,
+            "名かな": mei_kana,
+            "姓名": _full_name(sei, mei),
+            "姓名かな": _full_name_kana(sei_kana, mei_kana),
+            "ミドルネーム": "",
+            "ミドルネームかな": "",
+            "敬称": honor,
+            "ニックネーム": nickname,
+            "旧姓": old_sei,
+            "宛先": addressee,
+
+            "自宅〒": zip_home,
+            "自宅住所1": addr1_home,
+            "自宅住所2": addr2_home,
+            "自宅住所3": addr3_home,
+            "自宅電話": tel_home,
+            "自宅IM ID": im_home,
+            "自宅E-mail": email_home,
+            "自宅URL": url_home,
+            "自宅Social": social_home,
+
+            "会社〒": zip_company,
+            "会社住所1": addr1_company,
+            "会社住所2": addr2_company,
+            "会社住所3": addr3_company,
+            "会社電話": tel_company,
+            "会社IM ID": im_company,
+            "会社E-mail": email_company,
+        }
+        writer.writerow(rec)
 
     return out.getvalue()
-
-# ------------------------------------------------------------
-# healthz などから参照される補助（必要なら app.py で利用可）
-# ------------------------------------------------------------
-def furigana_engine_name() -> str:
-    return "pykakasi" if _KAKASI_OK else "fallback"
-
-def furigana_engine_detail() -> str:
-    return _KAKASI_ERR
-
-def company_overrides_version() -> str:
-    return _COMPANY_OVERRIDE_VERSION
-
-def corp_terms_version() -> str:
-    return _CORP_TERMS_VERSION
-
-def kana_pipeline_version() -> str:
-    return KANA_PIPELINE_VERSION
