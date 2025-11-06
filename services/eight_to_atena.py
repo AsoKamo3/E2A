@@ -1,22 +1,17 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体（v2.21）
-# - 住所/会社名/部署/役職 を ASCII→全角（数字・英字・記号・スペース含む）でワイド化
-# - 郵便番号は utils.textnorm.normalize_postcode を使用（半角7桁・ハイフン無し、不正は空）
-# - 電話は半角のまま「;」連結
-# - 部署は「前半/後半」に二分（中点・スラッシュ・カンマ等で分割）
+# Eight CSV/TSV → 宛名職人CSV 変換本体
 from __future__ import annotations
 
 import io
 import csv
-import unicodedata
 import math
 import re
 from typing import List
 
 from converters.address import split_address
-from utils.textnorm import to_zenkaku_wide, normalize_postcode  # ★ 追加
+from utils.textnorm import to_zenkaku_wide, normalize_postcode
 
-__version__ = "v2.21"
+__version__ = "v2.22"
 
 ATENA_HEADERS: List[str] = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
@@ -54,7 +49,7 @@ def _split_department_half(s: str) -> tuple[str, str]:
         return s, ""
     n = len(tokens)
     k = math.ceil(n / 2.0)
-    left = "　".join(tokens[:k])     # 全角スペースで結合
+    left = "　".join(tokens[:k])
     right = "　".join(tokens[k:]) if k < n else ""
     return left, right
 
@@ -87,7 +82,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         last        = g("姓")
         first       = g("名")
         email       = g("e-mail")
-        postcode    = normalize_postcode(g("郵便番号"))   # ★ 共通関数で正規化
+        postcode    = normalize_postcode(g("郵便番号"))   # ← ###-####
         addr_raw    = g("住所")
         tel_company = g("TEL会社")
         tel_dept    = g("TEL部門")
@@ -96,20 +91,15 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
-        # 住所分割（splitが建物を拾えなければ住所1に原文維持）
         a1, a2 = split_address(addr_raw)
         if (a2 or "").strip():
             addr1_raw, addr2_raw = a1, a2
         else:
             addr1_raw, addr2_raw = addr_raw, ""
 
-        # 電話
         phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
-
-        # 部署（前半/後半）
         dept1_raw, dept2_raw = _split_department_half(dept_raw)
 
-        # ★ 全角ワイド化（ASCII→全角：数字・英字・記号・スペース）
         addr1 = to_zenkaku_wide(addr1_raw)
         addr2 = to_zenkaku_wide(addr2_raw)
         company = to_zenkaku_wide(company_raw)
@@ -117,16 +107,12 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         dept2 = to_zenkaku_wide(dept2_raw)
         title = to_zenkaku_wide(title_raw)
 
-        # 姓名（かなは現状空）
         full_name = f"{last}{first}"
         last_kana = ""
         first_kana = ""
         full_name_kana = ""
-
-        # 会社名かな（現時点未付与）
         company_kana = ""
 
-        # メモ/備考（固定以降の '1' を拾う）
         fn_clean = reader.fieldnames or []
         tail_headers = fn_clean[len(EIGHT_FIXED):]
         flags: List[str] = []
