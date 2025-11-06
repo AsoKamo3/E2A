@@ -1,8 +1,6 @@
 # app.py
-# Eight → 宛名職人 変換 v1.10 (UIに各モジュールのバージョン表示)
-# - トップページに app / converter / address / textnorm の版を表示
-# - /healthz も同じ情報をJSONで返却
-# - 変換は services.eight_to_atena (v2.19) を利用（CSV/TSV自動判定OK）
+# Eight → 宛名職人 変換 v1.11
+# - トップページと /healthz に app / converter / address / textnorm / kana / bldg_dict_version を表示
 
 import io
 from datetime import datetime
@@ -13,7 +11,7 @@ from services.eight_to_atena import (
     __version__ as CONVERTER_VERSION,
 )
 
-VERSION = "v1.10"
+VERSION = "v1.11"
 
 INDEX_HTML = """
 <!doctype html>
@@ -43,10 +41,12 @@ INDEX_HTML = """
     <div class="verbox">
       <div><strong>App:</strong> <code>{{version}}</code></div>
       <div><strong>Converter:</strong> <code>{{conv}}</code></div>
-      <div><strong>Address:</strong> <code>{{addr_ver if addr_ver else "N/A"}}</code></div>
-      <div><strong>Textnorm:</strong> <code>{{txn_ver if txn_ver else "N/A"}}</code></div>
+      <div><strong>Address:</strong> <code>{{addr_ver or "N/A"}}</code></div>
+      <div><strong>Textnorm:</strong> <code>{{txn_ver or "N/A"}}</code></div>
+      <div><strong>Kana:</strong> <code>{{kana_ver or "N/A"}}</code></div>
+      <div><strong>Building Dict:</strong> <code>{{bldg_dict_ver or "N/A"}}</code></div>
     </div>
-    <div class="muted" style="margin-top:8px;">※ 上記は現在稼働中のモジュールのバージョンです。</div>
+    <div class="muted" style="margin-top:8px;">※ 上記は現在稼働中のモジュール/辞書のバージョンです。</div>
   </div>
 </body>
 </html>
@@ -55,26 +55,34 @@ INDEX_HTML = """
 app = Flask(__name__)
 
 def _module_versions():
-    """各モジュールのバージョンを安全に取得"""
+    """各モジュールと辞書のバージョンを安全に取得"""
     try:
         from converters.address import __version__ as ADDR_VER
     except Exception:
         ADDR_VER = None
     try:
-        from utils.textnorm import __version__ as TXN_VER
+        from utils.textnorm import __version__ as TXN_VER, bldg_words_version
+        BLDG_VER = bldg_words_version()
     except Exception:
         TXN_VER = None
-    return ADDR_VER, TXN_VER
+        BLDG_VER = None
+    try:
+        from utils.kana import __version__ as KANA_VER
+    except Exception:
+        KANA_VER = None
+    return ADDR_VER, TXN_VER, KANA_VER, BLDG_VER
 
 @app.route("/", methods=["GET"])
 def index():
-    addr_ver, txn_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver = _module_versions()
     return render_template_string(
         INDEX_HTML,
         version=VERSION,
         conv=CONVERTER_VERSION,
         addr_ver=addr_ver,
         txn_ver=txn_ver,
+        kana_ver=kana_ver,
+        bldg_dict_ver=bldg_dict_ver,
     )
 
 @app.route("/convert", methods=["POST"])
@@ -83,7 +91,6 @@ def convert():
     if not f or not getattr(f, "filename", ""):
         abort(400, "CSV/TSVファイルが選択されていません。")
 
-    # Eight標準はUTF-8想定。BOM/余白・区切り判定は変換関数側で吸収。
     try:
         csv_or_tsv_text = f.stream.read().decode("utf-8")
     except UnicodeDecodeError:
@@ -109,14 +116,16 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    addr_ver, txn_ver = _module_versions()
+    addr_ver, txn_ver, kana_ver, bldg_dict_ver = _module_versions()
     return jsonify(
         ok=True,
         app=VERSION,
         converter=CONVERTER_VERSION,
         address=addr_ver,
         textnorm=txn_ver,
+        kana=kana_ver,
+        building_dict=bldg_dict_ver,
     ), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    app.run(host="
