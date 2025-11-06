@@ -8,77 +8,66 @@ import re
 import unicodedata
 from typing import List, Any
 
-__version__ = "v1.9"
+__version__ = "v1.10"
 __meta__ = {
     "features": [
         "to_zenkaku (NFKC)",
         "to_zenkaku_wide (ASCII→全角：数字/英字/記号/スペース)",
         "normalize_block_notation",
-        "normalize_postcode (半角7桁・ハイフン無し／不正は空)",
+        "normalize_postcode (###-####・不正は空)",
         "load_bldg_words (array or {version,words})",
         "bldg_words_version()",
     ],
 }
 
-# 内部にロードした辞書版を保持（配列JSONの場合は None）
 _BLDG_VERSION: str | None = None
 
-# --- NFKC 全角化（ASCIIは半角のまま残る点に注意） ---
 def to_zenkaku(s: str) -> str:
     if s is None:
         return ""
     return unicodedata.normalize("NFKC", s)
 
-# --- ASCII → 全角（数字・英字・記号・スペースをすべて全角に） ---
 def to_zenkaku_wide(s: str) -> str:
-    """
-    ASCII (0x21-0x7E) を全角に、半角スペース(0x20)は全角スペース(U+3000)に変換。
-    他の文字はそのまま。
-    """
     if not s:
         return ""
     out = []
     for ch in s:
         oc = ord(ch)
         if ch == " ":
-            out.append("\u3000")  # 全角スペース
+            out.append("\u3000")
         elif 0x21 <= oc <= 0x7E:
-            out.append(chr(oc + 0xFEE0))  # 全角化（！〜～）
+            out.append(chr(oc + 0xFEE0))
         else:
             out.append(ch)
     return "".join(out)
 
-# --- 郵便番号（半角7桁・ハイフン無し。不正は空） ---
 def normalize_postcode(s: str) -> str:
     """
-    郵便番号を半角7桁・ハイフン無しに正規化。
-    7桁にできない場合は空文字を返す。
+    郵便番号を ###-#### で返す（7桁以外は空）。
+    入力は NFKC 後に数字のみ抽出。
     """
     if not s:
         return ""
     x = to_zenkaku(s)
     digits = "".join(ch for ch in x if ch.isdigit())
-    return digits if len(digits) == 7 else ""
+    if len(digits) != 7:
+        return ""
+    return digits[:3] + "-" + digits[3:]
 
-# --- 丁目/番地/番/号/「の」 → ハイフン寄せ ---
 _DEF_REPLACERS = [
-    (r"\s+", ""),               # 空白除去（まず詰める）
+    (r"\s+", ""),
     (r"丁目", "-"),
     (r"番地", "-"),
     (r"番", "-"),
     (r"号", "-"),
-    (r"の", "-"),               # 例: 1の2 → 1-2
-    (r"－", "-"),               # 全角記号→半角ハイフン
+    (r"の", "-"),
+    (r"－", "-"),
     (r"[‐‒–—―ｰ−]", "-"),
-    (r"-{2,}", "-"),            # 連続ハイフンの圧縮
-    (r"(^-|-$)", ""),           # 先頭末尾のハイフン除去
+    (r"-{2,}", "-"),
+    (r"(^-|-$)", ""),
 ]
 
 def normalize_block_notation(s: str) -> str:
-    """
-    番地系の表記ゆれを「ハイフン連鎖」に寄せる。
-    例: 5丁目25番10号 → 5-25-10 / 1の2 → 1-2
-    """
     if not s:
         return ""
     x = to_zenkaku(s)
@@ -86,15 +75,14 @@ def normalize_block_notation(s: str) -> str:
         x = re.sub(pat, rep, x)
     return x
 
-# --- 建物語辞書ロード ---
 def _candidate_paths(path: str | None) -> list[str]:
     c: list[str] = []
     if path:
         c.append(path)
-    here = os.path.dirname(os.path.abspath(__file__))   # .../utils
-    root = os.path.dirname(here)                         # プロジェクトルート想定
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
     c.append(os.path.join(root, "data", "bldg_words.json"))
-    c.append(os.path.join(here, "bldg_words.json"))     # 開発救済
+    c.append(os.path.join(here, "bldg_words.json"))
     return c
 
 def _dedup_nonempty(items: list[Any]) -> list[str]:
@@ -108,30 +96,19 @@ def _dedup_nonempty(items: list[Any]) -> list[str]:
     return out
 
 def load_bldg_words(path: str | None = None) -> List[str]:
-    """
-    建物語辞書を読み込む。
-    - 旧形式: JSONが配列  -> そのまま語リスト
-    - 新形式: {"version": "...", "words": [ ... ]} -> words を返し、内部に版を記録
-    見つからない/パース不能の時は [] を返す（呼び出し側がフォールバック）。
-    """
     global _BLDG_VERSION
     _BLDG_VERSION = None
-
     for p in _candidate_paths(path):
         try:
             if os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
-
-                # 新形式（オブジェクト）
                 if isinstance(data, dict):
                     ver = str(data.get("version") or "").strip() or None
                     words = data.get("words")
                     if isinstance(words, list):
                         _BLDG_VERSION = ver
                         return _dedup_nonempty(words)
-
-                # 旧形式（配列）
                 if isinstance(data, list):
                     return _dedup_nonempty(data)
         except Exception:
@@ -139,9 +116,4 @@ def load_bldg_words(path: str | None = None) -> List[str]:
     return []
 
 def bldg_words_version() -> str | None:
-    """
-    直近に load_bldg_words() が読み込んだ辞書のバージョンを返す。
-    - 新形式のJSONで 'version' があればその値
-    - 旧形式（配列のみ）の場合は None
-    """
     return _BLDG_VERSION
