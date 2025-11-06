@@ -1,15 +1,15 @@
 # app.py
-# Eight → 宛名職人 変換 最小版 v1.7
-# 単一ファイル。POST /convert で直接 CSV を返します。
+# Eight → 宛名職人 変換 v1.8 (UIあり)
+# - フロントのフォームはそのまま維持
+# - 変換は services.eight_to_atena (v2.19) を利用（CSV/TSV自動判定OK）
 
 import io
-import csv
 from datetime import datetime
-from flask import Flask, request, render_template_string, send_file, abort
+from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
 from services.eight_to_atena import convert_eight_csv_text_to_atena_csv_text, __version__ as CONVERTER_VERSION
 
-VERSION = "v1.7"
+VERSION = "v1.8"
 
 INDEX_HTML = """
 <!doctype html>
@@ -31,8 +31,8 @@ INDEX_HTML = """
   <div class="card">
     <h1>Eight → 宛名職人 変換 <span class="ver">({{version}} / converter {{conv}})</span></h1>
     <form method="post" action="/convert" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".csv" required />
-      <div class="muted">UTF-8 / カンマ区切りの Eight CSV を選択してください。</div>
+      <input type="file" name="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" required />
+      <div class="muted">UTF-8 の Eightエクスポート（CSV/TSV）を選択してください。区切りは自動判定します。</div>
       <p><button type="submit">変換してダウンロード</button></p>
     </form>
   </div>
@@ -50,14 +50,16 @@ def index():
 def convert():
     f = request.files.get("file")
     if not f or not getattr(f, "filename", ""):
-        abort(400, "CSVファイルが選択されていません。")
+        abort(400, "CSV/TSVファイルが選択されていません。")
+
+    # 文字コードは UTF-8 を想定（Eight標準）。BOM/余白は変換関数内部で処理。
     try:
-        csv_text = f.stream.read().decode("utf-8")
+        csv_or_tsv_text = f.stream.read().decode("utf-8")
     except UnicodeDecodeError:
         abort(400, "文字コードは UTF-8 にしてください。")
 
     try:
-        out_csv_text = convert_eight_csv_text_to_atena_csv_text(csv_text)
+        out_csv_text = convert_eight_csv_text_to_atena_csv_text(csv_or_tsv_text)
     except Exception as e:
         abort(500, f"変換に失敗しました: {e}")
 
@@ -76,7 +78,7 @@ def convert():
 
 @app.route("/healthz")
 def healthz():
-    return "ok", 200
+    return jsonify(ok=True, app=VERSION, converter=CONVERTER_VERSION), 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=False)
