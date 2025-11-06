@@ -1,0 +1,14 @@
+{
+  "version": "v1.0.0",
+  "normalize": {
+    "nfkc": true,
+    "strip_spaces": true,
+    "collapse_spaces": true,
+    "unify_middle_dot": true,
+    "fullwidth_ascii": true
+  },
+  "overrides": {
+    "山田太郎": "ヤマダ タロウ",
+    "O’CONNELL 鴨": "オコンネル カモ"  // 記号混入や混在もOK（NFKCで吸収）
+  }
+}
