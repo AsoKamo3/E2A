@@ -1,158 +1,81 @@
 # utils/textnorm.py
-# 共通のテキスト正規化・整形ユーティリティ
+# 文字種正規化・番地表記正規化・建物語辞書ロード
+from __future__ import annotations
 
+import json
 import os
 import re
-import json
 import unicodedata
-from functools import lru_cache
+from typing import List
 
-# =========================
-# 全角統一
-# =========================
+__version__ = "v1.6"
+__meta__ = {
+    "features": ["to_zenkaku", "normalize_block_notation", "load_bldg_words"],
+    "normalize_block_notation": ["丁目/番地/番/号/の → -", "全角記号・空白の整理"],
+}
+
+# --- NFKC 全角化 ---
 def to_zenkaku(s: str) -> str:
-    """半角の英数記号／ダッシュ類を全角系に寄せる簡易正規化。"""
-    if not s:
+    if s is None:
         return ""
-    t = unicodedata.normalize("NFKC", s)
-    # ダッシュ系を全角っぽい一本線へ
-    t = re.sub(r"[‐-‒–—―ｰ\-−]", "－", t)
+    return unicodedata.normalize("NFKC", s)
 
-    def to_wide_char(ch: str) -> str:
-        code = ord(ch)
-        # 数字
-        if 0x30 <= code <= 0x39:
-            return chr(code + 0xFEE0)
-        # A-Z
-        if 0x41 <= code <= 0x5A:
-            return chr(code + 0xFEE0)
-        # a-z
-        if 0x61 <= code <= 0x7A:
-            return chr(code + 0xFEE0)
-        # 代表的な記号
-        table = {
-            "/": "／", "#": "＃", "+": "＋", ".": "．", ",": "，", ":": "：",
-            "(": "（", ")": "）", "[": "［", "]": "］", "&": "＆", "@": "＠",
-            "~": "～", "_": "＿", "'": "’", '"': "”", "%": "％"
-        }
-        return table.get(ch, ch)
+# --- 丁目/番地/番/号/「の」 → ハイフン寄せ ---
+_DEF_REPLACERS = [
+    (r"\s+", ""),               # 空白除去（まず詰める）
+    (r"丁目", "-"),
+    (r"番地", "-"),
+    (r"番", "-"),
+    (r"号", "-"),
+    (r"の", "-"),               # 例: 1の2 → 1-2
+    (r"－", "-"),               # 全角マイナス/ダッシュ類を半角ハイフンに
+    (r"[‐‒–—―ｰ−]", "-"),
+    (r"-{2,}", "-"),            # 連続ハイフンの圧縮
+    (r"(^-|-$)", ""),           # 先頭末尾のハイフン除去
+]
 
-    return "".join(to_wide_char(c) for c in t)
-
-# =========================
-# 郵便番号 xxx-xxxx へ
-# =========================
-def normalize_postcode(s: str) -> str:
-    if not s:
-        return ""
-    z = re.sub(r"\D", "", s)
-    if len(z) == 7:
-        return f"{z[:3]}-{z[3:]}"
-    return s
-
-# =========================
-# 電話番号 正規化＆結合
-# =========================
-def normalize_phone(*nums):
-    cleaned = []
-    for n in nums:
-        if not n:
-            continue
-        d = re.sub(r"\D", "", n)
-        if not d:
-            continue
-        # 携帯
-        if re.match(r"^(070|080|090)\d{8}$", d):
-            cleaned.append(f"{d[:3]}-{d[3:7]}-{d[7:]}")
-            continue
-        # 市外局番 03/04/06（簡略）
-        if re.match(r"^(0[346])\d{8}$", d):
-            cleaned.append(f"{d[:2]}-{d[2:6]}-{d[6:]}")
-            continue
-        # その他ざっくり
-        if d.startswith("0") and len(d) in (10, 11):
-            if len(d) == 10:
-                cleaned.append(f"{d[:3]}-{d[3:6]}-{d[6:]}")
-            else:
-                cleaned.append(f"{d[:3]}-{d[3:7]}-{d[7:]}")
-            continue
-        cleaned.append(n)
-    return ";".join(cleaned)
-
-# =========================
-# 「丁目・番・号・の」→ ハイフン正規化
-# =========================
 def normalize_block_notation(s: str) -> str:
+    """
+    番地系の表記ゆれを「ハイフン連鎖」に寄せる。
+    例: 5丁目25番10号 → 5-25-10 / 1の2 → 1-2
+    """
     if not s:
-        return s
-    znum = r"[0-9０-９]+"
-    s = re.sub(rf"({znum})\s*丁目\s*({znum})\s*番地\s*({znum})\s*号", r"\1-\2-\3", s)
-    s = re.sub(rf"({znum})\s*丁目\s*({znum})\s*番\s*({znum})\s*号", r"\1-\2-\3", s)
-    s = re.sub(rf"({znum})\s*丁目\s*({znum})\s*番地", r"\1-\2", s)
-    s = re.sub(rf"({znum})\s*丁目\s*({znum})\s*番(?!地)", r"\1-\2", s)
-    s = re.sub(rf"({znum})\s*の\s*({znum})", r"\1-\2", s)
-    return s
+        return ""
+    x = to_zenkaku(s)
+    for pat, rep in _DEF_REPLACERS:
+        x = re.sub(pat, rep, x)
+    return x
 
-# =========================
-# ふりがな推定（kana.py 側が本体）
-# =========================
-# → ここではダミーは用意せず、呼び出し側が utils.kana.to_katakana_guess を使う
-
-# =========================
-# 部署名の二分割（今回の修正点）
-# =========================
-def split_department(dept: str):
+# --- 建物語辞書ロード ---
+def load_bldg_words(path: str | None = None) -> List[str]:
     """
-    Eightの[部署名]を、宛名職人の[部署名1] / [部署名2]に二分する。
-    想定セパレータ：
-      / ／ | ｜ > ＞ → ⇒ -> → （前後スペースは吸収）
-    3パーツ以上は左を多め(ceil(n/2))に寄せ、全角スペースで連結。
+    data/bldg_words.json を読み込む。
+    見つからない/パース不能の時は [] を返す（呼び出し側でフォールバック）。
     """
-    if not dept:
-        return "", ""
-    sep = r"""
-        \s*(?:                # 前後の空白は吸収
-            /|／|
-            \||｜|
-            >|＞|
-            →|⇒|
-            -\>|→
-        )\s*
-    """
-    parts = [p for p in re.split(sep, dept, flags=re.VERBOSE) if p and p.strip()]
-    parts = [p.strip() for p in parts]
-    if not parts:
-        return "", ""
-    if len(parts) == 1:
-        return parts[0], ""
-    if len(parts) == 2:
-        return parts[0], parts[1]
-    k = (len(parts) + 1) // 2
-    left = "　".join(parts[:k])   # 全角スペース
-    right = "　".join(parts[k:])
-    return left, right
+    candidates = []
+    if path:
+        candidates.append(path)
+    here = os.path.dirname(os.path.abspath(__file__))  # .../utils
+    root = os.path.dirname(here)                        # プロジェクトルート想定
+    candidates.append(os.path.join(root, "data", "bldg_words.json"))
+    candidates.append(os.path.join(here, "bldg_words.json"))  # 開発時の救済
 
-# =========================
-# 建物語辞書のロード（data/bldg_words.json）
-# =========================
-@lru_cache(maxsize=1)
-def load_bldg_words():
-    """data/bldg_words.json を読み込む。無ければデフォルト（少数）にフォールバック。"""
-    default = [
-        "ビル", "マンション", "ハイツ", "レジデンス", "タワー", "スクエア",
-        "センター", "ステーション", "プラザ", "コート", "ヒルズ", "プレイス"
-    ]
-    try:
-        here = os.path.dirname(os.path.abspath(__file__))
-        root = os.path.dirname(here)
-        path = os.path.join(root, "data", "bldg_words.json")
-        with open(path, "r", encoding="utf-8") as f:
-            words = json.load(f)
-        if isinstance(words, list) and words:
-            return words
-        return default
-    except Exception:
-        return default
-
-def get_bldg_words():
-    return load_bldg_words()
+    for p in candidates:
+        try:
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    out = [str(w) for w in data if isinstance(w, (str, int, float))]
+                    # 重複・空除去
+                    seen = set()
+                    res = []
+                    for w in out:
+                        w = str(w).strip()
+                        if w and w not in seen:
+                            seen.add(w)
+                            res.append(w)
+                    return res
+        except Exception:
+            continue
+    return []
