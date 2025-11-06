@@ -2,7 +2,15 @@ services:
   - type: web
     name: e2a
     env: python
-    rootDir: ./        # ここはあなたの Root Directory に合わせて変更
-    pythonVersion: 3.12.6
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 3 --threads 2 --timeout 180 --access-logfile - --error-logfile -
+    rootDir: ./E2A            # ← リポジトリ内のサービスの実ディレクトリ
+    pythonVersion: 3.12.6     # ← これで 3.12 系を強制
+    buildCommand: |
+      pip install --upgrade pip wheel
+      pip install -r requirements.txt
+    startCommand: >
+      gunicorn app:app --bind 0.0.0.0:$PORT
+      --workers 3 --threads 2 --timeout 180
+      --access-logfile - --error-logfile -
+    envVars:
+      - key: FURIGANA_ENABLED
+        value: "1"
