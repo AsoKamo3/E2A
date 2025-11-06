@@ -1,85 +1,124 @@
 # utils/textnorm.py
-# テキスト正規化ユーティリティ v1.11
-# - to_zenkaku: 英数記号スペースも含め全角化（NFKC→可能なら jaconv.z2h の逆で h2z）
-# - normalize_postcode: 7桁 → NNN-NNNN（半角）
-# - normalize_phone: TEL 正規化（携帯/050/0120/0800/0570/固定）→ 半角ハイフン区切り、';' 連結
-# - split_department: 部署名を前半/後半に分割
-# - strip_corp_terms: 法人格語の除去（corp_terms.json と内蔵の両方）
-# - 各辞書のバージョン問い合わせ（bldg_words_version / corp_terms_version / company_overrides_version）
+# v1.13: restore __version__; keep the minimal, stable APIs from v1.12
+# Exposes:
+#   - to_zenkaku
+#   - normalize_postcode
+#   - normalize_block_notation
+#   - load_bldg_words
+#   - bldg_words_version
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import unicodedata
-from typing import List, Tuple
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, Any, Tuple
 
-# 市外局番辞書（最長一致用）
-try:
-    from utils.jp_area_codes import AREA_CODES
-except Exception:
-    AREA_CODES = tuple()
+__version__ = "v1.13"
 
-__version__ = "v1.11"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_BLDG_JSON = _DATA_DIR / "bldg_words.json"
 
-# ========== 全角化 ==========
+__all__ = [
+    "__version__",
+    "to_zenkaku",
+    "normalize_postcode",
+    "normalize_block_notation",
+    "load_bldg_words",
+    "bldg_words_version",
+]
 
-def _half_to_full_basic(ch: str) -> str:
-    # 基本英数記号とスペースを全角化（NFKC では半角→全角にならない文字に対応）
-    code = ord(ch)
-    # ASCII可視文字
-    if 0x21 <= code <= 0x7E:
-        return chr(code + 0xFEE0)
-    if ch == " ":
-        return "　"
-    return ch
+# -----------------------------
+# Basic normalization utilities
+# -----------------------------
 
-def to_zenkaku(s: str) -> str:
-    if not s:
-        return ""
-    # まず NFKC で互換正規化 → その後 ASCII を全角化
-    t = unicodedata.normalize("NFKC", s)
-    t2 = "".join(_half_to_full_basic(c) for c in t)
-    # ダッシュ・スラッシュ類は全角へ寄せる
-    t2 = t2.replace("-", "－").replace("‐", "－").replace("–", "－").replace("—", "－")
-    t2 = t2.replace("/", "／")
-    return t2
-
-# ========== 郵便番号 ==========
-
-def normalize_postcode(s: str) -> str:
+def to_zenkaku(text: str) -> str:
     """
-    - 数字以外を除去 → 7桁なら NNN-NNNN を返す
-    - それ以外は空文字（Eight 側の欠損は無理に残さない）
+    NFKC 正規化（半角→全角・互換文字の正規化）。
+    住所・会社名・人名など広範に使うため、副作用の強い置換は行わない。
     """
-    if not s:
+    if text is None:
         return ""
-    digits = re.sub(r"\D", "", s)
+    return unicodedata.normalize("NFKC", str(text))
+
+
+# -----------------------------
+# Postcode normalization
+# -----------------------------
+
+# ハイフン類を ASCII ハイフンへ寄せるための正規表現
+_POSTCODE_RE = re.compile(r"(\d)[\-\u2212\u2010-\u2015\u30fc\uFF0D\u2013\u2014](\d)")
+_ONLY_DIGITS_RE = re.compile(r"\D+")
+
+def normalize_postcode(text: str) -> str:
+    """
+    郵便番号を「123-4567」形式に整える（数字が7桁あれば整形）。
+    7桁未満/超のときは、NFKC正規化＋ハイフン統一のみ行う。
+    例:
+      "１００  -  ８４３９" -> "100-8439"
+      "1008439"           -> "100-8439"
+    """
+    if not text:
+        return ""
+    s = to_zenkaku(text).strip()
+    digits = _ONLY_DIGITS_RE.sub("", s)
     if len(digits) == 7:
         return f"{digits[:3]}-{digits[3:]}"
-    return ""
+    # ハイフン類を ASCII ハイフンに統一
+    s = _POSTCODE_RE.sub(r"\1-\2", s)
+    return s
 
-# ========== 電話番号 ==========
 
-_MOBILE_PREFIX = ("090","080","070","060")
-_SPECIAL_PREFIX = ("050",)      # IP電話
-_TOLL_FREE = ("0120","0800")    # フリーダイヤル
-_NAVIGATIONAL = ("0570",)       # ナビダイヤル
+# -----------------------------
+# Block notation normalization
+# -----------------------------
 
-def _format_mobile(num: str) -> str:
-    return f"{num[:3]}-{num[3:7]}-{num[7:]}"  # 3-4-4
+_HYPHENS = r"[\-\u2212\u2010-\u2015\u30fc\uFF0D\u2013\u2014]"
+_BLOCK_RE = re.compile(rf"\s*({_HYPHENS})\s*")
 
-def _format_050(num: str) -> str:
-    return f"{num[:3]}-{num[3:7]}-{num[7:]}"  # 3-4-4
-
-def _format_0120_0800(num: str) -> str:
-    return f"{num[:4]}-{num[4:7]}-{num[7:]}"  # 4-3-3
-
-def _format_0570(num: str) -> str:
-    # 0570-000-000 or 0570-00-0000 → 0570-XXX-XXX のどちらもあり得るが 4-3-3 を優先
-    return f"{num[:4]}-{num[4:7]}-{num[7:]}"
-
-def _format_fixed_with_area(num: str) -> str:
+def normalize_block_notation(text: str) -> str:
     """
-    固定電話（0始まり10桁）を市外局
+    番地/号などの「1-2-3」表記をゆるく正規化。
+      - 多様なハイフンを ASCII '-' に統一
+      - ハイフン前後の余分な空白を除去
+      - 連続ハイフンは 1 本化
+    それ以外は壊さない（全角数字・漢数字・ビル名等は触らない）
+    """
+    if not text:
+        return ""
+    s = to_zenkaku(text)
+    s = _BLOCK_RE.sub("-", s)      # ハイフン周りの空白も同時に整理
+    s = re.sub(r"-{2,}", "-", s)   # 連続ハイフンの1本化
+    return s.strip()
+
+
+# -----------------------------
+# Building words dictionary
+# -----------------------------
+
+@lru_cache(maxsize=1)
+def load_bldg_words() -> Tuple[Dict[str, Any], str]:
+    """
+    data/bldg_words.json を読み込む。
+    返り値: (payload, version)
+      - payload: JSON本体（辞書）
+      - version: JSON内の "version" があればそれ、無ければ "unknown"
+    """
+    payload: Dict[str, Any] = {}
+    version = "unknown"
+    if _BLDG_JSON.exists():
+        try:
+            payload = json.loads(_BLDG_JSON.read_text(encoding="utf-8"))
+            version = str(payload.get("version", "unknown"))
+        except Exception:
+            payload = {}
+            version = "unknown"
+    return payload, version
+
+
+def bldg_words_version() -> str:
+    """bldg_words.json のバージョン文字列を返す（無ければ "unknown"）。"""
+    _, ver = load_bldg_words()
+    return ver
