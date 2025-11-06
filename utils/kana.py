@@ -1,8 +1,8 @@
 # utils/kana.py
-# ふりがな自動付与（推測）モジュール v0.8
+# ふりがな自動付与（推測）モジュール v0.9
 # - FURIGANA_ENABLED="1" で有効（デフォルト: 有効）
 # - pykakasi が使えればそれを利用。失敗時は簡易（ひら→カタカナ）にフォールバック
-# - engine_name()/engine_detail() で現在エンジン状態を返す
+# - engine_name()/engine_detail() で現在エンジン状態を返す（詳細には例外メッセージ文字列まで含める）
 
 from __future__ import annotations
 import os
@@ -10,7 +10,7 @@ import re
 import importlib.util
 from typing import Literal, Tuple
 
-__version__ = "v0.8"
+__version__ = "v0.9"
 
 _HIRA2KATA_TABLE = {chr(i): chr(i + 0x60) for i in range(0x3041, 0x3097)}  # ぁ-ゖ
 
@@ -77,7 +77,8 @@ def engine_detail() -> Tuple[str, str]:
     (engine, detail) を返す。
     detail 例:
       ("pykakasi","pykakasi ok")
-      ("fallback","pykakasi spec: None") / ("fallback","pykakasi error: ModuleNotFoundError")
+      ("fallback","pykakasi spec: None")
+      ("fallback","pykakasi error: ModuleNotFoundError: No module named 'XXXXX'")
       ("disabled","env FURIGANA_ENABLED!=1")
     """
     if os.environ.get("FURIGANA_ENABLED", "1") != "1":
@@ -90,4 +91,5 @@ def engine_detail() -> Tuple[str, str]:
         _ = pykakasi.kakasi()
         return ("pykakasi", "pykakasi ok")
     except Exception as e:
-        return ("fallback", f"pykakasi error: {e.__class__.__name__}")
+        # 例外クラス名 + 文字列（欠けている依存モジュール名が分かる）
+        return ("fallback", f"pykakasi error: {e.__class__.__name__}: {e}")
