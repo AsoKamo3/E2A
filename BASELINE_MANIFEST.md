@@ -2,7 +2,7 @@
 
 ## App & Services
 - app.py ..................... v1.18  →  v1.20
-- services/eight_to_atena.py . v2.33  →  v2.35
+- services/eight_to_atena.py . v2.33  →  v2.36
 
 ## Libraries
 - converters/address.py ...... v1.1.0
