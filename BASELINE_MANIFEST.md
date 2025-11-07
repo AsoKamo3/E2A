@@ -15,7 +15,7 @@
 - data/corp_terms.json ................... v1.0.1
 
 **企業名**
-- data/company_kana_overrides_jp.json .... v1.0.0  →  v1.0.1
+- data/company_kana_overrides_jp.json .... v1.0.0  →  v1.0.2
 - data/company_kana_overrides_en.json .... v1.0.0  →  v1.0.1
 
 **個人名**
