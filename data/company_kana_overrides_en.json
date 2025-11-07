@@ -1,5 +1,5 @@
 {
-  "version": "v1.0.1",
+  "version": "v1.0.3",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -18,5 +18,10 @@
   	"ON": "オン",
   	"THE": "ザ",
   	"TRACKS": "トラックス",
-  	"spin": "スピン"  }
+  	"spin": "スピン"
+    "TABIBAR": "タビバー",
+    "CAFE": "カフェ",
+    "dentsu": "デンツウ",
+    "Japan": "ジャパン"
+  }
 }
