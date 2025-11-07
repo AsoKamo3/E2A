@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 v1.19
+# Eight → 宛名職人 変換 v1.20
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 新規: 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示を追加
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
@@ -17,7 +17,7 @@ from services.eight_to_atena import (
     get_area_codes_version,
 )
 
-VERSION = "v1.19"
+VERSION = "v1.20"
 
 INDEX_HTML = """
 <!doctype html>
