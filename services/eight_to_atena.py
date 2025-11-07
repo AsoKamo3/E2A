@@ -1,5 +1,5 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.36
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.37
 # - 姓かな / 名かな / 会社名かな を自動付与（カタカナ強制）
 # - ★ 姓名かな = 姓かな + 名かな を出力
 # - 住所分割、郵便番号整形、全角ワイド化、電話（最長一致/特番/欠落0補正）対応
@@ -21,7 +21,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.36"
+__version__ = "v2.37"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -197,38 +197,6 @@ def _data_path(*rel: str) -> str:
     root = os.path.dirname(here)                             # repo root
     return os.path.join(root, *rel)
 
-def _normalize_for_jp_cfg(s: str, cfg: Dict[str, Any]) -> str:
-    x = s or ""
-    if cfg.get("nfkc"):
-        x = _nfkc(x)
-    if cfg.get("strip_spaces"):
-        x = x.strip()
-    if cfg.get("collapse_spaces"):
-        x = re.sub(r"[ \t\u3000]+", " ", x)
-    if cfg.get("unify_middle_dot"):
-        x = x.replace("・", "・")
-    if cfg.get("unify_slash_to"):
-        x = x.replace("/", cfg["unify_slash_to"]).replace("／", cfg["unify_slash_to"])
-    if cfg.get("fullwidth_ascii"):
-        x = _to_fullwidth_ascii(x)
-    return x
-
-def _normalize_for_en_cfg(s: str, cfg: Dict[str, Any]) -> str:
-    x = s or ""
-    if cfg.get("nfkc"):
-        x = _nfkc(x)
-    if cfg.get("lower"):
-        x = x.lower()
-    if cfg.get("strip_spaces"):
-        x = x.strip()
-    if cfg.get("collapse_spaces"):
-        x = re.sub(r"\s+", " ", x)
-    if cfg.get("unify_ampersand"):
-        x = x.replace("&", "&")
-    if cfg.get("unify_slash_to"):
-        x = x.replace("\\", "/").replace("／", "/")
-    return x
-
 def _nfkc(s: str) -> str:
     try:
         import unicodedata
@@ -247,6 +215,89 @@ def _to_fullwidth_ascii(s: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+def _unify_middle_dot(x: str) -> str:
+    # よくある中黒類・ピリオド類を "・" に寄せる
+    return (x.replace("･", "・")
+             .replace("·", "・")
+             .replace("•", "・")
+             .replace("．", "・")
+             .replace(".", "・"))
+
+def _unify_slash(x: str) -> str:
+    # 各種スラッシュを "/" に寄せる
+    return (x.replace("／", "/")
+             .replace("⁄", "/")
+             .replace("﹨", "/")
+             .replace("\\", "/"))
+
+def _collapse_spaces(x: str) -> str:
+    return re.sub(r"[ \t\u3000]+", " ", x)
+
+def _normalize_for_jp_cfg(s: str, cfg: Dict[str, Any]) -> str:
+    """
+    JP側の辞書キー/照合用正規化
+    - 既存の設定（nfkc, strip/collapse, unify_middle_dot, unify_slash_to, fullwidth_ascii）を尊重
+    - 大文字/小文字の揺れを吸収するため、デフォルトで casefold を有効化
+      * cfg["casefold"] が False の場合のみ無効
+      * cfg["lower"] が True の場合は lower を適用（優先度: casefold > lower）
+    """
+    x = s or ""
+    if cfg.get("nfkc", True):
+        x = _nfkc(x)
+    # まずはASCII側でケースを潰してから、必要なら全角化
+    if cfg.get("casefold", True):
+        x = x.casefold()
+    elif cfg.get("lower"):
+        x = x.lower()
+
+    # 記号ゆらぎ
+    if cfg.get("unify_middle_dot"):
+        x = _unify_middle_dot(x)
+    if cfg.get("unify_slash_to"):
+        x = _unify_slash(x)
+        x = x.replace("/", str(cfg["unify_slash_to"]))
+
+    # 空白ゆらぎ
+    if cfg.get("strip_spaces", True):
+        x = x.strip()
+    if cfg.get("collapse_spaces", True):
+        x = _collapse_spaces(x)
+
+    # 最後に全角ASCIIへ寄せる指定があれば適用
+    if cfg.get("fullwidth_ascii"):
+        x = _to_fullwidth_ascii(x)
+    return x
+
+def _normalize_for_en_cfg(s: str, cfg: Dict[str, Any]) -> str:
+    """
+    EN側の辞書キー/照合用正規化
+    - nfkc → casefold/lower → 記号ゆらぎ（&/slash）→ 空白調整 → 最後に unify_slash_to を反映
+    """
+    x = s or ""
+    if cfg.get("nfkc", True):
+        x = _nfkc(x)
+
+    # 大文字/小文字吸収（casefold優先）
+    if cfg.get("casefold", True) or cfg.get("lower"):
+        x = x.casefold() if cfg.get("casefold", True) else x.lower()
+
+    # 記号ゆらぎ
+    if cfg.get("unify_ampersand"):
+        x = x.replace("＆", "&")
+    # スラッシュ類を一旦 "/" に寄せる
+    x = _unify_slash(x)
+
+    # 空白調整
+    if cfg.get("strip_spaces", True):
+        x = x.strip()
+    if cfg.get("collapse_spaces", True):
+        x = re.sub(r"\s+", " ", x)
+
+    # 希望する最終スラッシュに変換（例: "/" → "／"）
+    if cfg.get("unify_slash_to"):
+        x = x.replace("/", str(cfg["unify_slash_to"]))
+    return x
 
 def _load_company_overrides() -> tuple[Dict[str, str], Dict[str, str], Dict[str, Any], Dict[str, Any]]:
     jp_obj = _load_json(_data_path("data", "company_kana_overrides_jp.json")) or {}
