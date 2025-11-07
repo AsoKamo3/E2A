@@ -1,5 +1,5 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.39
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.40
 # - 姓かな / 名かな / 会社名かな を自動付与（カタカナ強制）
 # - ★ 姓名かな = 姓かな + 名かな を出力
 # - 住所分割、郵便番号整形、全角ワイド化、電話（最長一致/特番/欠落0補正）対応
@@ -22,7 +22,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.39"
+__version__ = "v2.40"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -155,8 +155,8 @@ def _strip_company_type(name: str) -> str:
     base = (name or "").strip()
     for t in _COMPANY_TYPES:
         base = base.replace(t, "")
-    base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・]+", "", base)
-    base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・]+$", "", base)
+    base = re.sub(r"^[\s　\-‐ ─―－()\[\]【】／/・]+", "", base)
+    base = re.sub(r"[\s　\-‐ ─―－()\[\]【】／/・]+$", "", base)
     return base
 
 def _nfkc(s: str) -> str:
@@ -248,18 +248,19 @@ def _compose_kana_from_tokens(src_stripped: str,
     ENトークン辞書で部分一致合成。
     - 区切り（／ / ＆ ・ 空白）は読み上げず無視
     - 辞書ヒット→その読み
-    - ノーヒットの連続英字は _to_kata でカタカナ化
-    - その他文字はそのまま無視（ここではEN特化）
+    - ノーヒット連続英字は「単文字トークン→未定義部分のみ _to_kata」の二段構え
+    - その他文字は読み生成に寄与しない（EN特化）
     """
-    # 区切りはスペース化→除去（位置合わせ単純化）
     norm_base = _normalize_for_en_cfg(src_stripped, {"nfkc": True, "lower": True, "strip_spaces": True, "collapse_spaces": True, "unify_slash_to": "/"})
     work = _SEP_DROP.sub("", norm_base)
     i = 0
     out: List[str] = []
     n = len(work)
 
-    # 長いトークン優先で探索
     tok_keys = sorted(en_tok_index.keys(), key=len, reverse=True)
+
+    # 単文字辞書（a〜z）があるかを一度だけ判定
+    has_char_tokens = all(k in en_tok_index for k in list("abcdefghijklmnopqrstuvwxyz"))
 
     while i < n:
         hit = False
@@ -276,16 +277,36 @@ def _compose_kana_from_tokens(src_stripped: str,
             continue
 
         ch = work[i]
-        # 英字連続をまとめて _to_kata
         if "a" <= ch <= "z":
+            # 英字連続ブロックを取得
             j = i + 1
             while j < n and "a" <= work[j] <= "z":
                 j += 1
             frag = work[i:j]
-            out.append(_to_kata(frag))
+
+            if has_char_tokens:
+                # まず単文字辞書で逐字変換
+                buf = []
+                unknown = []
+                for c in frag:
+                    if c in en_tok_index:
+                        # 逐字で取れたら反映
+                        if unknown:
+                            # 未定義の連続は最後にまとめて _to_kata
+                            buf.append(_to_kata("".join(unknown)))
+                            unknown = []
+                        buf.append(en_tok_index[c])
+                    else:
+                        unknown.append(c)
+                if unknown:
+                    buf.append(_to_kata("".join(unknown)))
+                out.append("".join(buf))
+            else:
+                # 単文字辞書が無ければ、まとめて _to_kata（従来動作）
+                out.append(_to_kata(frag))
+
             i = j
         else:
-            # EN処理対象外（数字/記号）は読み生成に寄与しない（スキップ）
             i += 1
 
     return "".join(out)
@@ -312,20 +333,33 @@ def _company_kana(company_name: str,
     if en_key in en_index:
         return _clean_kana_symbols(en_index[en_key])
 
-    # 2.5) 部分一致合成（環境変数で制御）
+    # 2.5) 部分一致合成（ON時）
     use_partial = (os.environ.get("COMPANY_PARTIAL_OVERRIDES", "0") == "1")
     if use_partial:
         min_len = int(os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN", "2") or "2")
         min_len = max(1, min_len)
         composed = _compose_kana_from_tokens(stripped, en_tok_index, en_tok_norm, min_len)
-        if composed.strip():
-            return _clean_kana_symbols(composed)
+        composed_clean = _clean_kana_symbols(composed)
+        # 英字素残り対策：composed が a-z のみなら逐字読みへ強制フォールバック
+        if composed_clean and not re.search(r"[A-Za-z]", composed_clean):
+            return composed_clean
+        if composed and re.fullmatch(r"[A-Za-z]+", composed):
+            letters = composed.lower()
+            buf = []
+            for c in letters:
+                buf.append(en_tok_index.get(c, _to_kata(c)))
+            return _clean_kana_symbols("".join(buf))
+        if composed_clean:
+            return composed_clean
 
-    # 3) 英字略語を1文字ずつ読む（環境変数で制御）
+    # 3) 英字略語を1文字ずつ読む（設定ON）
     if acronym_charwise and re.fullmatch(r"[A-Za-z\s/&／・\u3000]+", stripped or ""):
-        letters = re.sub(r"[^A-Za-z]", "", stripped or "")
+        letters = re.sub(r"[^A-Za-z]", "", stripped or "").lower()
         if letters:
-            return _clean_kana_symbols(_to_kata(letters))
+            buf = []
+            for c in letters:
+                buf.append(en_tok_index.get(c, _to_kata(c)))
+            return _clean_kana_symbols("".join(buf))
 
     # 4) 推測
     return _clean_kana_symbols(_to_kata(stripped))
