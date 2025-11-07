@@ -4,7 +4,10 @@
 # - ★ 姓名かな = 姓かな + 名かな を出力
 # - 住所分割、郵便番号整形、全角ワイド化、電話（最長一致/特番/欠落0補正）対応
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）対応
-# - app.py のバージョン表示用ユーティリティ（辞書/エリア局番）関数を末尾に追加
+# - app.py のバージョン表示用ユーティリティ（辞書/エリア局番）関数あり
+# - v2.37: 「部分一致合成（オプション）」を追加（既定OFF・後方互換）
+#          環境変数 COMPANY_PARTIAL_OVERRIDES=1 でONにできます。
+#          JSON の "tokens" セクションで部分辞書を運用可能（最長一致・前方確定）。
 
 from __future__ import annotations
 
@@ -184,7 +187,7 @@ def _strip_company_type(name: str) -> str:
     base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・]+$", "", base)
     return base
 
-# ---- 会社名かな辞書（JP/EN）ローダ ----
+# ---- 正規化ヘルパ ----
 def _load_json(path: str) -> Any | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -216,90 +219,47 @@ def _to_fullwidth_ascii(s: str) -> str:
             out.append(ch)
     return "".join(out)
 
-def _unify_middle_dot(x: str) -> str:
-    # よくある中黒類・ピリオド類を "・" に寄せる
-    return (x.replace("･", "・")
-             .replace("·", "・")
-             .replace("•", "・")
-             .replace("．", "・")
-             .replace(".", "・"))
-
-def _unify_slash(x: str) -> str:
-    # 各種スラッシュを "/" に寄せる
-    return (x.replace("／", "/")
-             .replace("⁄", "/")
-             .replace("﹨", "/")
-             .replace("\\", "/"))
-
-def _collapse_spaces(x: str) -> str:
-    return re.sub(r"[ \t\u3000]+", " ", x)
-
 def _normalize_for_jp_cfg(s: str, cfg: Dict[str, Any]) -> str:
-    """
-    JP側の辞書キー/照合用正規化
-    - 既存の設定（nfkc, strip/collapse, unify_middle_dot, unify_slash_to, fullwidth_ascii）を尊重
-    - 大文字/小文字の揺れを吸収するため、デフォルトで casefold を有効化
-      * cfg["casefold"] が False の場合のみ無効
-      * cfg["lower"] が True の場合は lower を適用（優先度: casefold > lower）
-    """
     x = s or ""
-    if cfg.get("nfkc", True):
+    if cfg.get("nfkc"):
         x = _nfkc(x)
-    # まずはASCII側でケースを潰してから、必要なら全角化
-    if cfg.get("casefold", True):
-        x = x.casefold()
-    elif cfg.get("lower"):
-        x = x.lower()
-
-    # 記号ゆらぎ
-    if cfg.get("unify_middle_dot"):
-        x = _unify_middle_dot(x)
-    if cfg.get("unify_slash_to"):
-        x = _unify_slash(x)
-        x = x.replace("/", str(cfg["unify_slash_to"]))
-
-    # 空白ゆらぎ
-    if cfg.get("strip_spaces", True):
+    if cfg.get("strip_spaces"):
         x = x.strip()
-    if cfg.get("collapse_spaces", True):
-        x = _collapse_spaces(x)
-
-    # 最後に全角ASCIIへ寄せる指定があれば適用
+    if cfg.get("collapse_spaces"):
+        x = re.sub(r"[ \t\u3000]+", " ", x)
+    if cfg.get("unify_middle_dot"):
+        x = x.replace("・", "・")  # 将来拡張用：別記号を「・」に統一する場合
+    if cfg.get("unify_slash_to"):
+        x = x.replace("/", cfg["unify_slash_to"]).replace("／", cfg["unify_slash_to"])
     if cfg.get("fullwidth_ascii"):
         x = _to_fullwidth_ascii(x)
     return x
 
 def _normalize_for_en_cfg(s: str, cfg: Dict[str, Any]) -> str:
-    """
-    EN側の辞書キー/照合用正規化
-    - nfkc → casefold/lower → 記号ゆらぎ（&/slash）→ 空白調整 → 最後に unify_slash_to を反映
-    """
     x = s or ""
-    if cfg.get("nfkc", True):
+    if cfg.get("nfkc"):
         x = _nfkc(x)
-
-    # 大文字/小文字吸収（casefold優先）
-    if cfg.get("casefold", True) or cfg.get("lower"):
-        x = x.casefold() if cfg.get("casefold", True) else x.lower()
-
-    # 記号ゆらぎ
-    if cfg.get("unify_ampersand"):
-        x = x.replace("＆", "&")
-    # スラッシュ類を一旦 "/" に寄せる
-    x = _unify_slash(x)
-
-    # 空白調整
-    if cfg.get("strip_spaces", True):
+    if cfg.get("lower"):
+        x = x.lower()
+    if cfg.get("strip_spaces"):
         x = x.strip()
-    if cfg.get("collapse_spaces", True):
+    if cfg.get("collapse_spaces"):
         x = re.sub(r"\s+", " ", x)
-
-    # 希望する最終スラッシュに変換（例: "/" → "／"）
+    if cfg.get("unify_ampersand"):
+        x = x.replace("&", "&")  # 将来の別統一があればここで
     if cfg.get("unify_slash_to"):
-        x = x.replace("/", str(cfg["unify_slash_to"]))
+        x = x.replace("\\", "/").replace("／", "/")
     return x
 
-def _load_company_overrides() -> tuple[Dict[str, str], Dict[str, str], Dict[str, Any], Dict[str, Any]]:
+# ---- 会社名辞書ロード（フル一致 & 部分一致 tokens）----
+def _load_company_overrides() -> tuple[
+    Dict[str, str], Dict[str, str], Dict[str, Any], Dict[str, Any],
+    Dict[str, str], Dict[str, str]
+]:
+    """
+    returns:
+      jp_index, en_index, jp_norm_cfg, en_norm_cfg, jp_tokens_index, en_tokens_index
+    """
     jp_obj = _load_json(_data_path("data", "company_kana_overrides_jp.json")) or {}
     en_obj = _load_json(_data_path("data", "company_kana_overrides_en.json")) or {}
 
@@ -309,16 +269,32 @@ def _load_company_overrides() -> tuple[Dict[str, str], Dict[str, str], Dict[str,
     jp_ovr = jp_obj.get("overrides") or {}
     en_ovr = en_obj.get("overrides") or {}
 
-    # 正規化後キーで引けるように再構成
+    jp_tokens = jp_obj.get("tokens") or {}
+    en_tokens = en_obj.get("tokens") or {}
+
+    # フル一致インデックス（正規化後キー）
     jp_index: Dict[str, str] = {}
     for k, v in jp_ovr.items():
-        jp_index[_normalize_for_jp_cfg(k, jp_norm)] = v
+        jp_index[_normalize_for_jp_cfg(k, jp_norm)] = str(v)
 
     en_index: Dict[str, str] = {}
     for k, v in en_ovr.items():
-        en_index[_normalize_for_en_cfg(k, en_norm)] = v
+        en_index[_normalize_for_en_cfg(k, en_norm)] = str(v)
 
-    return jp_index, en_index, jp_norm, en_norm
+    # 部分一致トークンインデックス（正規化後キー）
+    jp_tok_index: Dict[str, str] = {}
+    for k, v in jp_tokens.items():
+        key = _normalize_for_jp_cfg(k, jp_norm)
+        if key:
+            jp_tok_index[key] = str(v)
+
+    en_tok_index: Dict[str, str] = {}
+    for k, v in en_tokens.items():
+        key = _normalize_for_en_cfg(k, en_norm)
+        if key:
+            en_tok_index[key] = str(v)
+
+    return jp_index, en_index, jp_norm, en_norm, jp_tok_index, en_tok_index
 
 # ---- 人名辞書（フル/姓/名）ローダ ----
 def _load_person_dicts() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
@@ -335,28 +311,122 @@ def _load_person_dicts() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]
 
     return pick_terms(full), pick_terms(surname), pick_terms(given)
 
-# ---- 会社名かな生成（辞書→推測） ----
+# ========== 部分一致合成（オプション） ==========
+# 既定OFF（後方互換）。環境変数 COMPANY_PARTIAL_OVERRIDES=1 でON。
+COMPANY_PARTIAL_OVERRIDES_ENABLED = os.environ.get("COMPANY_PARTIAL_OVERRIDES", "0") in ("1", "true", "True")
+COMPANY_PARTIAL_TOKEN_MIN_LEN = int(os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN", "2"))
+COMPANY_PARTIAL_PRIORITY = os.environ.get("COMPANY_PARTIAL_PRIORITY", "jp-first")  # "jp-first" | "en-first"
+
+def _compose_with_tokens(name: str, tokens_index: Dict[str, str], min_len: int) -> tuple[bool, str]:
+    """
+    name: 正規化済みの社名（JP正規化 or EN正規化のどちらか）
+    tokens_index: 同じ正規化で作った部分辞書（key: 正規化キー, value: カナ）
+    戻り値: (matched_any, kana_string)
+    アルゴリズム: 最長一致・前方確定（O(n*m)）。
+    未一致部分は _to_kata で推測して合成する。
+    """
+    if not name:
+        return False, ""
+
+    # 最大トークン長を事前計算
+    keys = list(tokens_index.keys())
+    if not keys:
+        return False, ""
+    max_len = max(len(k) for k in keys)
+
+    i = 0
+    n = len(name)
+    out_chunks: List[str] = []
+    buf_unmatched: List[str] = []
+    matched_any = False
+
+    while i < n:
+        best_val = None
+        best_len = 0
+        # 最長一致探索
+        upper = min(max_len, n - i)
+        for L in range(upper, min_len - 1, -1):
+            sub = name[i:i+L]
+            val = tokens_index.get(sub)
+            if val is not None:
+                best_val = val
+                best_len = L
+                break
+        if best_len > 0:
+            # 未一致バッファを吐き出し→トークンを採用
+            if buf_unmatched:
+                out_chunks.append(_to_kata("".join(buf_unmatched)))
+                buf_unmatched = []
+            out_chunks.append(best_val)  # ここは既にカナ想定
+            i += best_len
+            matched_any = True
+        else:
+            buf_unmatched.append(name[i])
+            i += 1
+
+    if buf_unmatched:
+        out_chunks.append(_to_kata("".join(buf_unmatched)))
+
+    return matched_any, "".join(out_chunks)
+
+def _company_kana_partial(stripped: str,
+                          jp_tokens: Dict[str, str], en_tokens: Dict[str, str],
+                          jp_cfg: Dict[str, Any], en_cfg: Dict[str, Any]) -> str | None:
+    """
+    部分一致合成（オプション）。ヒットが一切なければ None を返す。
+    優先順位は COMPANY_PARTIAL_PRIORITY に従う。
+    """
+    def via_jp():
+        name = _normalize_for_jp_cfg(stripped, jp_cfg)
+        return _compose_with_tokens(name, jp_tokens, COMPANY_PARTIAL_TOKEN_MIN_LEN)
+    def via_en():
+        name = _normalize_for_en_cfg(stripped, en_cfg)
+        return _compose_with_tokens(name, en_tokens, COMPANY_PARTIAL_TOKEN_MIN_LEN)
+
+    if COMPANY_PARTIAL_PRIORITY == "en-first":
+        matched, kana = via_en()
+        if matched:
+            return _clean_kana_symbols(kana)
+        matched, kana = via_jp()
+        if matched:
+            return _clean_kana_symbols(kana)
+        return None
+    else:
+        matched, kana = via_jp()
+        if matched:
+            return _clean_kana_symbols(kana)
+        matched, kana = via_en()
+        if matched:
+            return _clean_kana_symbols(kana)
+        return None
+
+# ---- 会社名かな生成（フル一致 → 部分一致合成（if enabled） → 推測） ----
 def _company_kana(company_name: str,
                   jp_index: Dict[str, str], en_index: Dict[str, str],
-                  jp_norm: Dict[str, Any], en_norm: Dict[str, Any]) -> str:
+                  jp_norm: Dict[str, Any], en_norm: Dict[str, Any],
+                  jp_tokens: Dict[str, str], en_tokens: Dict[str, str]) -> str:
     base = (company_name or "").strip()
     if not base:
         return ""
-
-    # 法人格を除去した上で、JP/EN の辞書と照合
+    # 法人格を除去してから判定
     stripped = _strip_company_type(base)
 
-    # JP正規化キー
+    # 1) フル一致（最優先）
     jp_key = _normalize_for_jp_cfg(stripped, jp_norm)
     if jp_key in jp_index:
         return _clean_kana_symbols(jp_index[jp_key])
 
-    # EN正規化キー（英字主体ケースに対応）
     en_key = _normalize_for_en_cfg(stripped, en_norm)
     if en_key in en_index:
         return _clean_kana_symbols(en_index[en_key])
 
-    # ヒットしなければ推測（カタカナ強制）
+    # 2) 部分一致合成（オプション）
+    if COMPANY_PARTIAL_OVERRIDES_ENABLED:
+        hit = _company_kana_partial(stripped, jp_tokens, en_tokens, jp_norm, en_norm)
+        if hit:
+            return hit
+
+    # 3) 推測（カタカナ強制 & 記号除去）
     return _clean_kana_symbols(_to_kata(stripped))
 
 # ---- 人名かな生成（フル最優先→姓/名トークン→推測） ----
@@ -371,7 +441,7 @@ def _person_name_kana(last: str, first: str,
     # フルネーム辞書が最優先
     if full in full_over:
         full_k = _clean_kana_symbols(full_over[full])
-        # 可能なら姓/名を分割できるが、辞書がフル専用なら姓/名個別は推測で補う
+        # 個別：辞書がなければ推測で補う
         last_k = _clean_kana_symbols(surname_terms.get(last, _to_kata(last)))
         first_k = _clean_kana_symbols(given_terms.get(first, _to_kata(first)))
         return last_k, first_k, full_k
@@ -397,8 +467,8 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     reader = csv.DictReader(buf, dialect=dialect)
     reader.fieldnames = [_clean_key(h) for h in (reader.fieldnames or [])]
 
-    # 会社/人名辞書ロード
-    JP_INDEX, EN_INDEX, JP_CFG, EN_CFG = _load_company_overrides()
+    # 会社/人名辞書ロード（v2.37: tokens も取得）
+    JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOKENS, EN_TOKENS = _load_company_overrides()
     FULL_OVER, SURNAME_TERMS, GIVEN_TERMS = _load_person_dicts()
 
     rows_out: List[List[str]] = []
@@ -444,8 +514,8 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         dept2 = to_zenkaku_wide(dept2_raw)
         title = to_zenkaku_wide(title_raw)
 
-        # かな自動付与（会社名: 辞書→推測、人名: フル→姓/名→推測、いずれもカタカナ＆記号除去）
-        company_kana = _company_kana(company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG) or ""
+        # かな自動付与（会社名: フル一致→部分一致（if enabled）→推測、人名: フル→姓/名→推測）
+        company_kana = _company_kana(company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOKENS, EN_TOKENS) or ""
         last_kana, first_kana, full_name_kana = _person_name_kana(last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS)
 
         # ★ 姓名は素の結合（ユーザ仕様）
@@ -500,7 +570,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     w.writerows(rows_out)
     return out.getvalue()
 
-# ==== minimal add-ons for version reporting (do not change existing logic) ====
+# ==== minimal add-ons for version reporting (unchanged) ====
 
 def _read_json_version(*relative_candidate_paths: str) -> str | None:
     """
@@ -529,7 +599,7 @@ def get_company_override_versions() -> tuple[str | None, str | None]:
     """
     jp_ver = _read_json_version(
         os.path.join("data", "company_kana_overrides_jp.json"),
-        os.path.join("services", "data", "company_kana_overrides_jp.json"),  # 万一の配置違いに弱対応
+        os.path.join("services", "data", "company_kana_overrides_jp.json"),
     )
     en_ver = _read_json_version(
         os.path.join("data", "company_kana_overrides_en.json"),
