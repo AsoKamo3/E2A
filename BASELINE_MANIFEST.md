@@ -7,7 +7,7 @@
 ## Libraries
 - converters/address.py ...... v1.1.0
 - utils/textnorm.py .......... v1.16
-- utils/kana.py .............. v1.0
+- utils/kana.py .............. v1.1
 - utils/jp_area_codes.py ..... v1.0.0
 
 ## Data
@@ -19,11 +19,11 @@
 - data/company_kana_overrides_en.json .... v1.0.0  →  v1.0.1
 
 **個人名**
-- data/person_kana_overrides_full.json ... v1.0.0
+- data/person_full_overrides.json ........ v1.0.0
 - data/surname_kana_terms.json ........... v1.0.0  →  v1.0.1
 - data/given_kana_terms.json ............. v1.0.0  →  v1.0.1
 
-- data/company_kana_overrides.json ....... v1.1
+- data/company_kana_overrides.json ....... v1.1 // 未使用？
 
 
 ## Notes
