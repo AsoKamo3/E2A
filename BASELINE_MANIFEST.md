@@ -2,7 +2,7 @@
 
 ## App & Services
 - app.py ..................... v1.20
-- services/eight_to_atena.py . v2.37
+- services/eight_to_atena.py . v2.39
 
 ## Libraries
 - converters/address.py ...... v1.1.0
@@ -16,7 +16,7 @@
 
 **企業名辞書**
 - data/company_kana_overrides_jp.json .... v1.1.1
-- data/company_kana_overrides_en.json .... v1.0.3
+- data/company_kana_overrides_en.json .... v1.0.4
 
 **個人名辞書**
 - data/person_full_overrides.json ........ v1.0.0
