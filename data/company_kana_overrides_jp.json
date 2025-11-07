@@ -1,5 +1,5 @@
 {
-  "version": "v1.1.0",
+  "version": "v1.1.1",
   "normalize": {
     "nfkc": true,
     "strip_spaces": true,
@@ -9,7 +9,8 @@
     "fullwidth_ascii": true
   },
   "overrides": {
-    "ＴＡＢＩＢＡＲ＆ＣＡＦＥ": "タビバーカフェ"
+    "ＴＡＢＩＢＡＲ＆ＣＡＦＥ": "タビバーカフェ",
+    "日本放送協会": "ニッポンホウソウキョウカイ"
   },
   "tokens": {
     "ＳＯＭＰＯ": "ソンポ",
