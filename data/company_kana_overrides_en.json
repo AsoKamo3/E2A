@@ -1,5 +1,5 @@
 {
-  "version": "v1.0.0",
+  "version": "v1.0.1",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -9,7 +9,14 @@
     "unify_slash_to": "/"
   },
   "overrides": {
-    "dentsu japan": "デンツウジャパン",
-    "tabibar & cafe": "タビバーカフェ"
-  }
+  	"SOMPO": "ソンポ",
+  	"ISARIBI": "イサリビ",
+  	"Podcast": "ポッドキャスト",
+  	"Studio": "スタジオ",
+  	"Chronicle": "クロニクル",
+  	"BOOK": "ブック",
+  	"ON": "オン",
+  	"THE": "ザ",
+  	"TRACKS": "トラックス",
+  	"spin": "スピン"  }
 }
