@@ -1,5 +1,5 @@
 {
-  "version": "v1.1.4",
+  "version": "v1.1.5",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -15,7 +15,8 @@
     "grandpacificwork": "グランドパシフィックワーク","hametuha": "ハメツハ","heart catch": "ハートキャッチ","helpush": "ヘルプッシュ",
     "i7": "アイセブン","kadokawa": "カドカワ","kedama": "ケダマ","keyaki works": "ケヤキワークス","kushami": "クシャミ",
     "layerx": "レイヤーエックス","navicus": "ナビカス","neorealx": "ネオリアルエックス","oddjob": "オッドジョブ","omoshiro": "オモシロ",
-    "one": "ワン","oszero": "オーエスゼロ","ramclear": "ラムクリア","renea": "レネア","shabel": "シャベル","sprocket": "スプロケット",
+    "one": "ワン","oszero": "オーエスゼロ","ramclear": "ラムクリア","raywood": "レイウッド","renea": "レネア","sagojo": "サゴジョウ",
+    "surfrider": "サーフライダー", "shabel": "シャベル","sprocket": "スプロケット",
     "subsclife": "サブスクライフ","u-next": "ユーネクスト"
     
   },
@@ -36,8 +37,8 @@
     "cobawood": "コバウッド","company": "カンパニー","consulting": "コンサルティング","counter": "カウンター","cozfish": "コズフィッシュ",
     "crazy": "クレイジー","creative": "クリエイティブ","dentsu": "デンツウ","emoote": "イーモート","en": "アン",
     "entertainment": "エンターテインメント","express": "エクスプレス","factarium": "ファクトリウム","factory": "ファクトリー",
-    "fictionera": "フィクショネラ","fitness": "フィットネス","flatte": "フラッテ","foundation": "ファウンデーション","free": "フリー",
-    "garden": "ガーデン","google": "グーグル","grand": "グランド","gym": "ジム","hanalee": "ハナレ","happiness": "ハピネス",
+    "fictionera": "フィクショネラ","fitness": "フィットネス","flatte": "フラッテ","for": "フォー","foundation": "ファウンデーション","free": "フリー",
+    "garden": "ガーデン","google": "グーグル","grand": "グランド","gym": "ジム","hanalee": "ハナレ","happiness": "ハピネス","hakuhodo": "ハクホウドウ",
     "hardware": "ハードウェア","heart": "ハート","hennge": "ヘンゲ","herbs": "ハーブス","holoeyes": "ホロアイズ","hostel": "ホステル",
     "imagica": "イマジカ","inazuma": "イナズマ","innovation": "イノヴェーション","isaribi": "イサリビ","japan": "ジャパン",
     "junkudo": "ジュンクドウ","kainotori": "カイノトリ","kaneko": "カネコ","keyaki": "ケヤキ","kodansha": "コウダンシャ",
