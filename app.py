@@ -1,7 +1,8 @@
 # app.py
-# Eight → 宛名職人 変換 v1.20
+# Eight → 宛名職人 変換 v1.21
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 新規: 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示を追加
+# - 新規: /selftest/overrides, /selftest/company_kana の簡易自己診断APIを追加
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
 
 import io
@@ -15,9 +16,14 @@ from services.eight_to_atena import (
     get_company_override_versions,
     get_person_dict_versions,
     get_area_codes_version,
+    # ↓ selftest 用（内部関数だが診断目的で使用）
+    _load_company_overrides,
+    _company_kana,
+    _read_json_version,
 )
+from utils.textnorm import to_zenkaku_wide  # selftest 正規化用
 
-VERSION = "v1.20"
+VERSION = "v1.21"
 
 INDEX_HTML = """
 <!doctype html>
@@ -222,6 +228,50 @@ def healthz():
         sys_path=list(os.sys.path),
     )
     return jsonify(info), 200
+
+# --- Selftest: 辞書のロード状況/設定確認 ---
+@app.route("/selftest/overrides")
+def selftest_overrides():
+    # 実体のインデックスと正規化設定
+    jp_idx, en_idx, jp_cfg, en_cfg = _load_company_overrides()
+
+    # バージョン（トークン辞書も併記）
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
+    jp_ver, en_ver = get_company_override_versions()
+    jp_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_jp.json"))
+    en_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_en.json"))
+
+    return jsonify(dict(
+        ok=True,
+        sizes=dict(jp=len(jp_idx), en=len(en_idx)),
+        versions=dict(
+            company_overrides_jp=jp_ver,
+            company_overrides_en=en_ver,
+            company_overrides_tokens_jp=jp_tok_ver,
+            company_overrides_tokens_en=en_tok_ver,
+        ),
+        normalize=dict(jp=jp_cfg, en=en_cfg),
+        env=dict(
+            COMPANY_PARTIAL_OVERRIDES=os.environ.get("COMPANY_PARTIAL_OVERRIDES"),
+            COMPANY_PARTIAL_TOKEN_MIN_LEN=os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN"),
+            PARTIAL_ACRONYM_CHARWISE=os.environ.get("PARTIAL_ACRONYM_CHARWISE"),
+        ),
+    )), 200
+
+# --- Selftest: 会社名かな の単発確認 ---
+@app.route("/selftest/company_kana")
+def selftest_company_kana():
+    name = request.args.get("name", "")
+    jp_idx, en_idx, jp_cfg, en_cfg = _load_company_overrides()
+    # 画面と同じ to_zenkaku_wide を当てたうえで確認
+    normalized_name = to_zenkaku_wide(name)
+    kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg)
+    return jsonify(dict(
+        input=name,
+        normalized=normalized_name,
+        kana=kana,
+    )), 200
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", "8000")), debug=False)
