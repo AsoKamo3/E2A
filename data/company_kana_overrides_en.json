@@ -9,7 +9,7 @@
     "fullwidth_ascii": true
   },
   "overrides": {
-    "TABIBAR&CAFE": "タビバーカフェ",
+    "TABIBAR&CAFE": "タビバーカフェ"
   },
   "tokens": {
     // ｰｰｰｰ 英字読み上げ辞書部分 -----
