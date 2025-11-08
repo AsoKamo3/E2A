@@ -1,9 +1,9 @@
 # app.py
-# Eight → 宛名職人 変換 v1.21
+# Eight → 宛名職人 変換 v1.22
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
-# - 新規: 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示を追加
-# - 新規: /selftest/overrides, /selftest/company_kana の簡易自己診断APIを追加
-# - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
+# - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
+# - /selftest/overrides, /selftest/company_kana の簡易自己診断API（v1.21）を堅牢化
+#   * services 側の戻り値/関数シグネチャ変更（v2.37+）にも両対応
 
 import io
 import os
@@ -16,14 +16,14 @@ from services.eight_to_atena import (
     get_company_override_versions,
     get_person_dict_versions,
     get_area_codes_version,
-    # ↓ selftest 用（内部関数だが診断目的で使用）
+    # selftest 用（内部関数）
     _load_company_overrides,
     _company_kana,
     _read_json_version,
 )
-from utils.textnorm import to_zenkaku_wide  # selftest 正規化用
+from utils.textnorm import to_zenkaku_wide
 
-VERSION = "v1.21"
+VERSION = "v1.22"
 
 INDEX_HTML = """
 <!doctype html>
@@ -91,12 +91,11 @@ def _module_versions():
         ADDR_VER = None
 
     try:
-        # textnorm 側の辞書バージョン問い合わせ（ビル語・法人格・旧会社オーバーライド）
         from utils.textnorm import (
             __version__ as TXN_VER,
             bldg_words_version,
             corp_terms_version,
-            company_overrides_version,  # 旧: company_kana_overrides.json を使う場合
+            company_overrides_version,
         )
         BLDG_VER = bldg_words_version()
         CORP_TERMS_VER = corp_terms_version()
@@ -114,7 +113,6 @@ def _module_versions():
         def engine_name(): return None
         def engine_detail(): return None
 
-    # services 側（新設の辞書群とエリア局番）
     try:
         comp_jp, comp_en = get_company_override_versions()
     except Exception:
@@ -229,22 +227,41 @@ def healthz():
     )
     return jsonify(info), 200
 
-# --- Selftest: 辞書のロード状況/設定確認 ---
+# --- Selftest: 辞書のロード状況/設定確認（旧/新形式に両対応） ---
 @app.route("/selftest/overrides")
 def selftest_overrides():
-    # 実体のインデックスと正規化設定
-    jp_idx, en_idx, jp_cfg, en_cfg = _load_company_overrides()
+    try:
+        loaded = _load_company_overrides()
+    except Exception as e:
+        return jsonify(dict(ok=False, error=f"_load_company_overrides failed: {e!r}")), 500
 
-    # バージョン（トークン辞書も併記）
-    here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.dirname(here)
+    # 旧: 4要素 / 新: 8要素（v2.37+）
+    jp_idx = en_idx = jp_cfg = en_cfg = None
+    tok_jp = tok_en = None
+    min_len = None
+    charwise = None
+
+    if isinstance(loaded, (list, tuple)):
+        if len(loaded) >= 4:
+            jp_idx, en_idx, jp_cfg, en_cfg = loaded[:4]
+        if len(loaded) >= 6:
+            tok_jp, tok_en = loaded[4:6]
+        if len(loaded) >= 8:
+            min_len, charwise = loaded[6:8]
+
+    # バージョン（トークン辞書も）
     jp_ver, en_ver = get_company_override_versions()
     jp_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_jp.json"))
     en_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_en.json"))
 
     return jsonify(dict(
         ok=True,
-        sizes=dict(jp=len(jp_idx), en=len(en_idx)),
+        sizes=dict(
+            jp=len(jp_idx or {}),
+            en=len(en_idx or {}),
+            tokens_jp=len(tok_jp or {}),
+            tokens_en=len(tok_en or {}),
+        ),
         versions=dict(
             company_overrides_jp=jp_ver,
             company_overrides_en=en_ver,
@@ -252,6 +269,7 @@ def selftest_overrides():
             company_overrides_tokens_en=en_tok_ver,
         ),
         normalize=dict(jp=jp_cfg, en=en_cfg),
+        tokens_present=dict(jp=bool(tok_jp), en=bool(tok_en)),
         env=dict(
             COMPANY_PARTIAL_OVERRIDES=os.environ.get("COMPANY_PARTIAL_OVERRIDES"),
             COMPANY_PARTIAL_TOKEN_MIN_LEN=os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN"),
@@ -259,15 +277,42 @@ def selftest_overrides():
         ),
     )), 200
 
-# --- Selftest: 会社名かな の単発確認 ---
+# --- Selftest: 会社名かな の単発確認（旧/新シグネチャに両対応） ---
 @app.route("/selftest/company_kana")
 def selftest_company_kana():
     name = request.args.get("name", "")
-    jp_idx, en_idx, jp_cfg, en_cfg = _load_company_overrides()
-    # 画面と同じ to_zenkaku_wide を当てたうえで確認
+    try:
+        loaded = _load_company_overrides()
+    except Exception as e:
+        return jsonify(dict(ok=False, error=f"_load_company_overrides failed: {e!r}")), 500
+
+    # 共通：入力は画面同様に全角ワイド化してから渡す
     normalized_name = to_zenkaku_wide(name)
-    kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg)
+
+    # アンパック（4 or 8）
+    jp_idx = en_idx = jp_cfg = en_cfg = None
+    tok_jp = tok_en = None
+    min_len = None
+    charwise = None
+    if isinstance(loaded, (list, tuple)):
+        if len(loaded) >= 4:
+            jp_idx, en_idx, jp_cfg, en_cfg = loaded[:4]
+        if len(loaded) >= 6:
+            tok_jp, tok_en = loaded[4:6]
+        if len(loaded) >= 8:
+            min_len, charwise = loaded[6:8]
+
+    # 旧/新シグネチャ両対応で呼び出し
+    try:
+        kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg)
+    except TypeError:
+        # 新（v2.37+）: 追加引数あり
+        kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg, tok_jp, tok_en, min_len, charwise)
+    except Exception as e:
+        return jsonify(dict(ok=False, error=f"_company_kana failed: {e!r}")), 500
+
     return jsonify(dict(
+        ok=True,
         input=name,
         normalized=normalized_name,
         kana=kana,
