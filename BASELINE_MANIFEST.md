@@ -12,7 +12,7 @@
 
 ## Data
 - data/bldg_words.json ................... v1.0.0
-- data/corp_terms.json ................... v1.0.1
+- data/corp_terms.json ................... v1.0.3
 
 **企業名辞書**
 - data/company_kana_overrides_jp.json .... v1.1.1
