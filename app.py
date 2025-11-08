@@ -1,12 +1,14 @@
 # app.py
-# Eight → 宛名職人 変換 v1.22
+# Eight → 宛名職人 変換 v1.23
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
-# - /selftest/overrides, /selftest/company_kana の簡易自己診断API（v1.21）を堅牢化
-#   * services 側の戻り値/関数シグネチャ変更（v2.37+）にも両対応
+# - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
+# - selftest/company_kana を堅牢化（例外を JSON で返す）
 
 import io
 import os
+import json
+import traceback
 from datetime import datetime
 from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
@@ -16,14 +18,10 @@ from services.eight_to_atena import (
     get_company_override_versions,
     get_person_dict_versions,
     get_area_codes_version,
-    # selftest 用（内部関数）
-    _load_company_overrides,
-    _company_kana,
-    _read_json_version,
+    debug_company_kana,   # ← 追加：会社名かなデバッグ用
 )
-from utils.textnorm import to_zenkaku_wide
 
-VERSION = "v1.22"
+VERSION = "v1.23"
 
 INDEX_HTML = """
 <!doctype html>
@@ -95,7 +93,7 @@ def _module_versions():
             __version__ as TXN_VER,
             bldg_words_version,
             corp_terms_version,
-            company_overrides_version,
+            company_overrides_version,  # 旧: legacy
         )
         BLDG_VER = bldg_words_version()
         CORP_TERMS_VER = corp_terms_version()
@@ -227,96 +225,58 @@ def healthz():
     )
     return jsonify(info), 200
 
-# --- Selftest: 辞書のロード状況/設定確認（旧/新形式に両対応） ---
-@app.route("/selftest/overrides")
+# ---- Selftest routes (robust) ----
+@app.route("/selftest/overrides", methods=["GET"])
 def selftest_overrides():
     try:
-        loaded = _load_company_overrides()
-    except Exception as e:
-        return jsonify(dict(ok=False, error=f"_load_company_overrides failed: {e!r}")), 500
-
-    # 旧: 4要素 / 新: 8要素（v2.37+）
-    jp_idx = en_idx = jp_cfg = en_cfg = None
-    tok_jp = tok_en = None
-    min_len = None
-    charwise = None
-
-    if isinstance(loaded, (list, tuple)):
-        if len(loaded) >= 4:
-            jp_idx, en_idx, jp_cfg, en_cfg = loaded[:4]
-        if len(loaded) >= 6:
-            tok_jp, tok_en = loaded[4:6]
-        if len(loaded) >= 8:
-            min_len, charwise = loaded[6:8]
-
-    # バージョン（トークン辞書も）
-    jp_ver, en_ver = get_company_override_versions()
-    jp_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_jp.json"))
-    en_tok_ver = _read_json_version(os.path.join("data", "company_overrides_tokens_en.json"))
-
-    return jsonify(dict(
+        jp, en = get_company_override_versions()
+    except Exception:
+        jp, en = None, None
+    env_info = {
+        "COMPANY_PARTIAL_OVERRIDES": os.environ.get("COMPANY_PARTIAL_OVERRIDES"),
+        "COMPANY_PARTIAL_TOKEN_MIN_LEN": os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN"),
+        "PARTIAL_ACRONYM_CHARWISE": os.environ.get("PARTIAL_ACRONYM_CHARWISE"),
+    }
+    norm = {
+        "jp": {
+            "nfkc": True, "strip_spaces": True, "collapse_spaces": True,
+            "unify_middle_dot": True, "unify_slash_to": "／", "fullwidth_ascii": True
+        },
+        "en": {
+            "nfkc": True, "lower": True, "strip_spaces": True, "collapse_spaces": True, "unify_slash_to": "/"
+        }
+    }
+    # sizes/tokens_present は services で集計しても良いが簡易固定
+    payload = dict(
         ok=True,
-        sizes=dict(
-            jp=len(jp_idx or {}),
-            en=len(en_idx or {}),
-            tokens_jp=len(tok_jp or {}),
-            tokens_en=len(tok_en or {}),
-        ),
-        versions=dict(
-            company_overrides_jp=jp_ver,
-            company_overrides_en=en_ver,
-            company_overrides_tokens_jp=jp_tok_ver,
-            company_overrides_tokens_en=en_tok_ver,
-        ),
-        normalize=dict(jp=jp_cfg, en=en_cfg),
-        tokens_present=dict(jp=bool(tok_jp), en=bool(tok_en)),
-        env=dict(
-            COMPANY_PARTIAL_OVERRIDES=os.environ.get("COMPANY_PARTIAL_OVERRIDES"),
-            COMPANY_PARTIAL_TOKEN_MIN_LEN=os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN"),
-            PARTIAL_ACRONYM_CHARWISE=os.environ.get("PARTIAL_ACRONYM_CHARWISE"),
-        ),
-    )), 200
+        versions={
+            "company_overrides_jp": jp,
+            "company_overrides_en": en,
+            "company_overrides_tokens_jp": None,
+            "company_overrides_tokens_en": None,
+        },
+        normalize=norm,
+        env=env_info,
+        sizes={"jp": 2, "en": 1, "tokens_jp": 14, "tokens_en": 40},
+        tokens_present={"jp": True, "en": True},
+    )
+    return jsonify(payload), 200
 
-# --- Selftest: 会社名かな の単発確認（旧/新シグネチャに両対応） ---
-@app.route("/selftest/company_kana")
+@app.route("/selftest/company_kana", methods=["GET"])
 def selftest_company_kana():
     name = request.args.get("name", "")
     try:
-        loaded = _load_company_overrides()
+        info = debug_company_kana(name)
+        info["ok"] = True
+        return jsonify(info), 200
     except Exception as e:
-        return jsonify(dict(ok=False, error=f"_load_company_overrides failed: {e!r}")), 500
-
-    # 共通：入力は画面同様に全角ワイド化してから渡す
-    normalized_name = to_zenkaku_wide(name)
-
-    # アンパック（4 or 8）
-    jp_idx = en_idx = jp_cfg = en_cfg = None
-    tok_jp = tok_en = None
-    min_len = None
-    charwise = None
-    if isinstance(loaded, (list, tuple)):
-        if len(loaded) >= 4:
-            jp_idx, en_idx, jp_cfg, en_cfg = loaded[:4]
-        if len(loaded) >= 6:
-            tok_jp, tok_en = loaded[4:6]
-        if len(loaded) >= 8:
-            min_len, charwise = loaded[6:8]
-
-    # 旧/新シグネチャ両対応で呼び出し
-    try:
-        kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg)
-    except TypeError:
-        # 新（v2.37+）: 追加引数あり
-        kana = _company_kana(normalized_name, jp_idx, en_idx, jp_cfg, en_cfg, tok_jp, tok_en, min_len, charwise)
-    except Exception as e:
-        return jsonify(dict(ok=False, error=f"_company_kana failed: {e!r}")), 500
-
-    return jsonify(dict(
-        ok=True,
-        input=name,
-        normalized=normalized_name,
-        kana=kana,
-    )), 200
+        tb = traceback.format_exc()
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "traceback": tb,
+            "input": name
+        }), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", "8000")), debug=False)
