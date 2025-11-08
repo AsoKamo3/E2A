@@ -8,8 +8,8 @@
     "unify_slash_to": "/"
   },
   "overrides": {
-    "TABIBAR&CAFE": "タビバーカフェ","PlanD": "プランディー","bytedance": "バイトダンス",
-    "IMAGICA Lab.": "イマジカラボ","GRASP": "グラスプ","ozma": "オズマ","EYEDEAR": "アイディアー", "crazy tv": "クレイジーティヴィ"
+    "tabibar&cafe": "タビバーカフェ","pland": "プランディー","bytedance": "バイトダンス",
+    "imagica lab.": "イマジカラボ","grasp": "グラスプ","ozma": "オズマ","EYEDEAR": "アイディアー", "crazy tv": "クレイジーティヴィ"
     
   },
   "tokens": {
