@@ -9,7 +9,14 @@
   },
   "overrides": {
     "tabibar&cafe": "タビバーカフェ","pland": "プランディー","bytedance": "バイトダンス",
-    "imagica lab.": "イマジカラボ","grasp": "グラスプ","ozma": "オズマ","EYEDEAR": "アイディアー", "crazy tv": "クレイジーティヴィ"
+    "imagica lab.": "イマジカラボ","grasp": "グラスプ","ozma": "オズマ","EYEDEAR": "アイディアー", "crazy tv": "クレイジーティヴィ",
+    "a3": "エースリー","alis": "アリス","aoi pro": "アオイプロ","bizm": "ビズム","braise": "ブレイズ","connpute": "コンピュート",
+    "dcent": "ディーセント","flux": "フラックス","free style company": "フリースタイルカンパニー","gacco": "ガッコ",
+    "grandpacificwork": "グランドパシフィックワーク","hametuha": "ハメツハ","heart catch": "ハートキャッチ","helpush": "ヘルプッシュ",
+    "i7": "アイセブン","kadokawa": "カドカワ","kedama": "ケダマ","keyaki works": "ケヤキワークス","kushami": "クシャミ",
+    "layerx": "レイヤーエックス","navicus": "ナビカス","neorealx": "ネオリアルエックス","oddjob": "オッドジョブ","omoshiro": "オモシロ",
+    "one": "ワン","oszero": "オーエスゼロ","ramclear": "ラムクリア","renea": "レネア","shabel": "シャベル","sprocket": "スプロケット",
+    "subsclife": "サブスクライフ","u-next": "ユーネクスト"
     
   },
   "tokens": {
@@ -18,26 +25,35 @@
     "k": "ケー","l": "エル","m": "エム","n": "エヌ","o": "オー",
     "p": "ピー","q": "キュー","r": "アール","s": "エス","t": "ティー",
     "u": "ユー","v": "ブイ","w": "ダブリュー","x": "エックス","y": "ワイ","z": "ズィー",
+
+    "0": "ゼロ","1": "ワン","2": "トゥー","3": "スリー","4": "フォー",
+    "5": "ファイブ","6": "シックス","7": "セブン","8": "エイト","9": "ナイン",
     
-    "58": "フィフティーエイト","all": "オール","apres-midi": "アプレミディ","art": "アート","arts": "アーツ","base": "ベース","bkside": "ビーケーサイド",
-    "book": "ブック","books": "ブックス","bookshop": "ブックショップ","broadcasting": "ブロードキャスティング","cafe": "カフェ","carbide": "カーバイド",
-    "chronicle": "クロニクル","cobawood": "コバウッド","consulting": "コンサルティング","counter": "カウンター","cozfish": "コズフィッシュ",
-    "crazy": "クレイジー","creative": "クリエイティブ","dentsu": "デンツウ","emoote": "イーモート","en": "アン","entertainment": "エンターテインメント",
-    "express": "エクスプレス","factarium": "ファクトリウム","factory": "ファクトリー","fictionera": "フィクショネラ","fitness": "フィットネス",
-    "flatte": "フラッテ","foundation": "ファウンデーション","garden": "ガーデン","google": "グーグル","gym": "ジム","hanalee": "ハナレ",
-    "happiness": "ハピネス","hardware": "ハードウェア","hennge": "ヘンゲ","herbs": "ハーブス","holoeyes": "ホロアイズ","hostel": "ホステル",
-    "imagica": "イマジカ","inazuma": "イナズマ","innovation": "イノヴェーション","isaribi": "イサリビ","japan": "ジャパン","junkudo": "ジュンクドウ",
-    "kainotori": "カイノトリ","kaneko": "カネコ","kodansha": "コウダンシャ","kouri": "コウリ","lab": "ラボ","lab.": "ラボ","labo": "ラボ",
-    "landscape": "ランドスケープ","lanka": "ランカ","leisure": "レジャー","line": "ライン","lover": "ラヴァー","magical": "マジカル","main": "メイン",
-    "management": "マネジメント","maruzen": "マルゼン","media": "メディア","meeting": "ミーティング","memorial": "メモリアル","miracle": "ミラクル",
-    "mitsui": "ミツイ","momo": "モモ","museum": "ミュージアム","music": "ミュージック","necoya": "ネコヤ","news": "ニュース","nhk": "エヌエイチケー",
-    "nide": "ニード","ningbo": "ニンボー","note": "ノート","office": "オフィス","offlne": "オフライン","ogata": "オガタ","ogury": "オグリー","ohako": "オハコ",
-    "on": "オン","onsen": "オンセン","parade": "パレード","paypay": "ペイペイ","picks": "ピックス","pictures": "ピクチャーズ","podcast": "ポッドキャスト",
-    "products": "プロダクツ","pronews": "プロニュース","radioya": "ラジオヤ","rascasse": "ラスカス","reading": "リーディング","repro": "レプロ",
-    "saitama": "サイタマ","seesaw": "シーソー","skyland": "スカイランド","slowly": "スローリー","snowy": "スノーイー","sompo": "ソンポ","soup": "スープ",
-    "spin": "スピン","stand": "スタンド","studio": "スタジオ","sunagare": "スナガレ","tabibar": "タビバー","tech": "テック","technology": "テクノロジー",
-    "tedoya": "テドヤ","tent": "テント","the": "ザ","togo": "トーゴー","tokyo": "トウキョウ","toppan": "トッパン","tracks": "トラックス",
-    "untapped": "アンタップド","up": "アップ","uuum": "ウーム","vedette": "ヴデット","ventures": "ベンチャーズ","villa": "ヴィラ","voox": "ヴークス",
-    "warner": "ワーナー","was": "ワズ","works": "ワークス","works": "ワークス","yadokari": "ヤドカリ","you": "ユー"
+    
+    "58": "フィフティーエイト","all": "オール","aoi": "アオイ","apres-midi": "アプレミディ","art": "アート","arts": "アーツ",
+    "base": "ベース","bkside": "ビーケーサイド","book": "ブック","books": "ブックス","bookshop": "ブックショップ",
+    "broadcasting": "ブロードキャスティング","cafe": "カフェ","carbide": "カーバイド","catch": "キャッチ","chronicle": "クロニクル",
+    "cobawood": "コバウッド","company": "カンパニー","consulting": "コンサルティング","counter": "カウンター","cozfish": "コズフィッシュ",
+    "crazy": "クレイジー","creative": "クリエイティブ","dentsu": "デンツウ","emoote": "イーモート","en": "アン",
+    "entertainment": "エンターテインメント","express": "エクスプレス","factarium": "ファクトリウム","factory": "ファクトリー",
+    "fictionera": "フィクショネラ","fitness": "フィットネス","flatte": "フラッテ","foundation": "ファウンデーション","free": "フリー",
+    "garden": "ガーデン","google": "グーグル","grand": "グランド","gym": "ジム","hanalee": "ハナレ","happiness": "ハピネス",
+    "hardware": "ハードウェア","heart": "ハート","hennge": "ヘンゲ","herbs": "ハーブス","holoeyes": "ホロアイズ","hostel": "ホステル",
+    "imagica": "イマジカ","inazuma": "イナズマ","innovation": "イノヴェーション","isaribi": "イサリビ","japan": "ジャパン",
+    "junkudo": "ジュンクドウ","kainotori": "カイノトリ","kaneko": "カネコ","keyaki": "ケヤキ","kodansha": "コウダンシャ",
+    "kouri": "コウリ","lab": "ラボ","lab.": "ラボ","labo": "ラボ","landscape": "ランドスケープ","lanka": "ランカ","leisure": "レジャー",
+    "line": "ライン","lover": "ラヴァー","magical": "マジカル","main": "メイン","management": "マネジメント","maruzen": "マルゼン",
+    "media": "メディア","meeting": "ミーティング","memorial": "メモリアル","miracle": "ミラクル","mitsui": "ミツイ","momo": "モモ",
+    "museum": "ミュージアム","music": "ミュージック","necoya": "ネコヤ","news": "ニュース","nhk": "エヌエイチケー","nide": "ニード",
+    "ningbo": "ニンボー","note": "ノート","office": "オフィス","offlne": "オフライン","ogata": "オガタ","ogury": "オグリー",
+    "ohako": "オハコ","on": "オン","onsen": "オンセン","pacific": "パシフィック","parade": "パレード","paypay": "ペイペイ",
+    "picks": "ピックス","pictures": "ピクチャーズ","podcast": "ポッドキャスト","pro": "プロ","products": "プロダクツ",
+    "pronews": "プロニュース","radioya": "ラジオヤ","rascasse": "ラスカス","reading": "リーディング","repro": "レプロ",
+    "saitama": "サイタマ","seesaw": "シーソー","skyland": "スカイランド","slowly": "スローリー","snowy": "スノーイー","sompo": "ソンポ",
+    "soup": "スープ","spin": "スピン","stand": "スタンド","studio": "スタジオ","style": "スタイル","sunagare": "スナガレ",
+    "tabibar": "タビバー","tech": "テック","technology": "テクノロジー","tedoya": "テドヤ","tent": "テント","the": "ザ",
+    "togo": "トーゴー","tokyo": "トウキョウ","toppan": "トッパン","tracks": "トラックス","untapped": "アンタップド","up": "アップ",
+    "uuum": "ウーム","vedette": "ヴデット","ventures": "ベンチャーズ","villa": "ヴィラ","voox": "ヴークス","warner": "ワーナー",
+    "was": "ワズ","work": "ワーク","works": "ワークス","yadokari": "ヤドカリ","you": "ユー"
       }
 }
