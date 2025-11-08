@@ -8,7 +8,8 @@
     "unify_slash_to": "/"
   },
   "overrides": {
-    "TABIBAR&CAFE": "タビバーカフェ"
+    "TABIBAR&CAFE": "タビバーカフェ","PlanD": "プランディー","bytedance": "バイトダンス",
+    "IMAGICA Lab.": "イマジカラボ","GRASP": "グラスプ",
   },
   "tokens": {
     "a": "エー","b": "ビー","c": "シー","d": "ディー","e": "イー",
@@ -17,7 +18,9 @@
     "p": "ピー","q": "キュー","r": "アール","s": "エス","t": "ティー",
     "u": "ユー","v": "ブイ","w": "ダブリュー","x": "エックス","y": "ワイ","z": "ズィー",
     "SOMPO": "ソンポ","ISARIBI": "イサリビ","Podcast": "ポッドキャスト","Studio": "スタジオ",
-    "Chronicle": "クロニクル","BOOK": "ブック","ON": "オン","THE": "ザ","TRACKS": "トラックス","spin": "スピン",
-    "TABIBAR": "タビバー","CAFE": "カフェ","dentsu": "デンツウ","Japan": "ジャパン"
+    "Chronicle": "クロニクル","BOOK": "ブック","BOOKS": "ブックス","ON": "オン","THE": "ザ","TRACKS": "トラックス","spin": "スピン",
+    "TABIBAR": "タビバー","CAFE": "カフェ","dentsu": "デンツウ","Japan": "ジャパン",
+    "READING": "リーディング","oagta": "オガタ","office": "オフィス","IMAGICA": "イマジカ","Lab.": "ラボ",
+    "necoya": "ネコヤ","villa": "ヴィラ","REPRO": "レプロ"
   }
 }
