@@ -1,10 +1,9 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.4.9
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.4.10
 # - 既存ロジックは維持
-# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加（既存）
-# - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定（既存）
-# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供（既存）
-# - ★ v2.4.9: 会社種別の除去を「長い表記を優先」に変更（一般社団法人→一般残り対策の最小パッチ）
+# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加
+# - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定
+# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供
 
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.4.9"
+__version__ = "v2.4.10"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -186,8 +185,7 @@ _COMPANY_TYPES = [
 
 def _strip_company_type(name: str) -> str:
     base = (name or "").strip()
-    # ★ v2.4.9: 長い表記を優先して除去（「一般社団法人」→「一般」残りを防止）
-    for t in sorted(_COMPANY_TYPES, key=len, reverse=True):
+    for t in _COMPANY_TYPES:
         base = base.replace(t, "")
     # 前後ノイズ記号を軽く除去
     base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
@@ -786,11 +784,23 @@ def _load_company_overrides() -> tuple[
     jp_tok = jp_obj.get("tokens") or {}
     en_tok = en_obj.get("tokens") or {}
 
-    # 正規化後キーで引けるように再構成
+    # 正規化後キーで引けるように再構成（全文一致）
     jp_index: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_ovr.items()}
     en_index: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_ovr.items()}
 
-    jp_tokens: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok.items()}
-    en_tokens: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_tok.items()}
+    # ★最小差分パッチ：overrides（空でない値のみ）も部分一致トークンへ合流
+    jp_tok_merged = dict(jp_tok)
+    jp_tok_merged.update({
+        _normalize_for_jp_cfg(k, jp_norm): v
+        for k, v in jp_ovr.items() if isinstance(v, str) and v.strip()
+    })
+    en_tok_merged = dict(en_tok)
+    en_tok_merged.update({
+        _normalize_for_en_cfg(k, en_norm): v
+        for k, v in en_ovr.items() if isinstance(v, str) and v.strip()
+    })
+
+    jp_tokens: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok_merged.items()}
+    en_tokens: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_tok_merged.items()}
 
     return jp_index, en_index, jp_norm, en_norm, jp_tokens, en_tokens
