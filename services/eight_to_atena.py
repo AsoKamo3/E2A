@@ -1,9 +1,10 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.47
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.4.9
 # - 既存ロジックは維持
-# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加
-# - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定
-# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供
+# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加（既存）
+# - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定（既存）
+# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供（既存）
+# - ★ v2.4.9: 会社種別の除去を「長い表記を優先」に変更（一般社団法人→一般残り対策の最小パッチ）
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.4.8"
+__version__ = "v2.4.9"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -185,7 +186,8 @@ _COMPANY_TYPES = [
 
 def _strip_company_type(name: str) -> str:
     base = (name or "").strip()
-    for t in _COMPANY_TYPES:
+    # ★ v2.4.9: 長い表記を優先して除去（「一般社団法人」→「一般」残りを防止）
+    for t in sorted(_COMPANY_TYPES, key=len, reverse=True):
         base = base.replace(t, "")
     # 前後ノイズ記号を軽く除去
     base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
