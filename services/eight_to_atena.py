@@ -1,9 +1,10 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.0
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.1
 # - 既存ロジックは維持
 # - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加
 # - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定
 # - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供
+# - v2.5.1: ENトークン境界判定を ASCII 英数字のみに限定（和文に挟まれた EN トークンも拾う）
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.5.0"
+__version__ = "v2.5.1"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -158,8 +159,7 @@ def _normalize_phone(*nums: str) -> str:
 
 # ========== かな生成：会社名・人名（辞書→推測） ==========
 # 記号類はフリガナから除去
-_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］\]&()（）【】]+")
-
+_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］\]&]+")
 def _clean_kana_symbols(s: str) -> str:
     return _KANA_SYMBOLS_RE.sub("", s or "").strip()
 
@@ -185,31 +185,13 @@ _COMPANY_TYPES = [
 ]
 
 def _strip_company_type(name: str) -> str:
-    """
-    会社種別（法人格/英語系接尾）をロバストに除去。
-    - NFKC 正規化してから一致を取り、全角/半角差や空白挿入にも耐性を持たせる
-    """
-    src = (name or "")
-    try:
-        import unicodedata
-        nfkc = unicodedata.normalize("NFKC", src)
-    except Exception:
-        nfkc = src
-    # 種別語を長い順に（部分かぶり対策）
-    types_sorted = sorted(_COMPANY_TYPES, key=len, reverse=True)
-    for t in types_sorted:
-        try:
-            t_nfkc = unicodedata.normalize("NFKC", t)
-        except Exception:
-            t_nfkc = t
-        # 「任意の空白/記号をまたいで一致」を軽く許容（例: '一般 社団 法人'）
-        pat = re.escape(t_nfkc)
-        pat = pat.replace(r"\ ", r"[\s\u3000]*")
-        nfkc = re.sub(pat, "", nfkc)
-    # 余計な記号・空白をトリム
-    nfkc = re.sub(r"^[\s\u3000\-‐─―－()\[\]【】／/・,，.．]+", "", nfkc)
-    nfkc = re.sub(r"[\s\u3000\-‐ ─―－()\[\]【】／/・,，.．]+$", "", nfkc)
-    return nfkc
+    base = (name or "").strip()
+    for t in _COMPANY_TYPES:
+        base = base.replace(t, "")
+    # 前後ノイズ記号を軽く除去
+    base = re.sub(r"^[\s　\-‐ ─―－()\[\]【】／/・,，.．]+", "", base)
+    base = re.sub(r"[\s　\-‐ ─―－()\[\]【】／/・,，.．]+$", "", base)
+    return base
 
 # ---- 会社名かな辞書（JP/EN）ローダ ----
 def _load_json(path: str) -> Any | None:
@@ -377,6 +359,9 @@ def _company_kana(company_name: str,
             if seg.strip():
                 out_parts.append(_clean_kana_symbols(_to_kata(seg)))
 
+        def _is_ascii_alnum(ch: str) -> bool:
+            return ("a" <= ch <= "z") or ("0" <= ch <= "9")
+
         while i < n:
             ch = stripped[i]
 
@@ -404,9 +389,9 @@ def _company_kana(company_name: str,
                     tl = len(t)
                     if tl <= 0 or i + tl > n:
                         continue
-                    # 語境界（軽い抑制：英数字に挟まれた中間は避ける）
-                    prev_ok = (i == 0) or not view_en[i-1].isalnum()
-                    next_ok = (i + tl == n) or not view_en[i+tl].isalnum()
+                    # 語境界（ASCII英数のみで判定。和文は境界として扱う）
+                    prev_ok = (i == 0) or not _is_ascii_alnum(view_en[i-1])
+                    next_ok = (i + tl == n) or not _is_ascii_alnum(view_en[i+tl])
                     if view_en[i:i+tl] == t and (prev_ok or next_ok):
                         matched = (tl, _clean_kana_symbols(en_tokens[t]))
                         break
@@ -713,6 +698,9 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
                 if seg.strip():
                     out_parts.append(_clean_kana_symbols(_to_kata(seg)))
 
+        def _is_ascii_alnum(ch: str) -> bool:
+            return ("a" <= ch <= "z") or ("0" <= ch <= "9")
+
         while i < n:
             ch = stripped[i]
             if _is_sep(ch):
@@ -733,8 +721,9 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
                 for t in en_keys:
                     tl = len(t)
                     if tl > 0 and i + tl <= n and view_en[i:i+tl] == t:
-                        prev_ok = (i == 0) or not view_en[i-1].isalnum()
-                        next_ok = (i + tl == n) or not view_en[i+tl].isalnum()
+                        # 語境界（ASCII英数のみで判定。和文は境界として扱う）
+                        prev_ok = (i == 0) or not _is_ascii_alnum(view_en[i-1])
+                        next_ok = (i + tl == n) or not _is_ascii_alnum(view_en[i+tl])
                         if prev_ok or next_ok:
                             matched = ("en", t, tl, _clean_kana_symbols(EN_TOK[t]))
                             break
