@@ -1,5 +1,5 @@
 {
-  "version": "v1.1.8",
+  "version": "v1.1.9",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -58,7 +58,8 @@
 "surfrider": "サーフライダー",
 "tabibar&cafe": "タビバーカフェ",
 "tutti create": "ツッチクリエイト",
-"u-next": "ユーネクスト"
+"u-next": "ユーネクスト",
+"warner bros": "ワーナーブラザーズ"
     
   },
   "tokens": {
