@@ -1,5 +1,5 @@
 {
-  "version": "v1.1.7",
+  "version": "v1.1.8",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -30,7 +30,7 @@
 "hametuha": "ハメツハ",
 "heart catch": "ハートキャッチ",
 "helpush": "ヘルプッシュ",
-"ihtowa": "ヒトワ",
+"hitowa": "ヒトワ",
 "i7": "アイセブン",
 "imagica lab.": "イマジカラボ",
 "kadokawa": "カドカワ",
