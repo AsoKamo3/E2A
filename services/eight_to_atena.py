@@ -1,9 +1,10 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.4.10
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.4.11
 # - 既存ロジックは維持
 # - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加
 # - PARTIAL_ACRONYM_MAX_LEN（既定3）を導入し、略称の1文字読み上げを短い塊に限定
 # - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供
+# - v2.4.11: 会社種別除去を可変スペース対応の正規表現で強化（“一般社団法人” の取り残し防止）
 
 from __future__ import annotations
 
@@ -184,31 +185,33 @@ _COMPANY_TYPES = [
 ]
 
 def _strip_company_type(name: str) -> str:
-		base = (name or "").strip()
-			if not base:
-					return ""
-			# “一般 社団 法人” のような途中スペースや全角/半角のゆれを許容
-			# 代表型だけ正規表現で叩き落とし、残りは従来の列挙置換でカバー
-			TYPE_PATTERNS = [
-					r"一\s*般\s*社\s*団\s*法\s*人",
-					r"一\s*般\s*財\s*団\s*法\s*人",
-					r"公\s*益\s*社\s*団\s*法\s*人",
-					r"公\s*益\s*財\s*団\s*法\s*人",
-					r"特\s*定\s*非\s*営\s*利\s*活\s*動\s*法\s*人"
-			]
-			# 全角/半角空白を共通視
-			sp = r"[ \u3000]*"
-			for pat in TYPE_PATTERNS:
-					base = re.sub(pat, "", base)
-			# 従来の列挙も最終的に実施（完全一致の揺れを潰す）
-			for t in _COMPANY_TYPES:
-					if t:
-					    base = base.replace(t, "")
-			# 前後ノイズ記号を軽く除去
-			base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
-			base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・,，.．]+$", "", base)
-			return base
+    """
+    v2.4.11: “一般社団法人” などの可変スペース混入・全角半角ゆれを正規表現で除去。
+    その後、従来の列挙置換も走らせて取りこぼしを拾う。
+    """
+    base = (name or "").strip()
+    if not base:
+        return ""
+    # 代表的な法人種別（可変スペース許容）
+    TYPE_PATTERNS = [
+        r"一\s*般\s*社\s*団\s*法\s*人",
+        r"一\s*般\s*財\s*団\s*法\s*人",
+        r"公\s*益\s*社\s*団\s*法\s*人",
+        r"公\s*益\s*財\s*団\s*法\s*人",
+        r"特\s*定\s*非\s*営\s*利\s*活\s*動\s*法\s*人",
+    ]
+    for pat in TYPE_PATTERNS:
+        base = re.sub(pat, "", base)
 
+    # 従来の列挙置換（全角/半角・句読点のバリエーション含む）
+    for t in _COMPANY_TYPES:
+        if t:
+            base = base.replace(t, "")
+
+    # 前後ノイズ記号を軽く除去
+    base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
+    base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・,，.．]+$", "", base)
+    return base
 
 # ---- 会社名かな辞書（JP/EN）ローダ ----
 def _load_json(path: str) -> Any | None:
@@ -802,23 +805,11 @@ def _load_company_overrides() -> tuple[
     jp_tok = jp_obj.get("tokens") or {}
     en_tok = en_obj.get("tokens") or {}
 
-    # 正規化後キーで引けるように再構成（全文一致）
+    # 正規化後キーで引けるように再構成
     jp_index: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_ovr.items()}
     en_index: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_ovr.items()}
 
-    # ★最小差分パッチ：overrides（空でない値のみ）も部分一致トークンへ合流
-    jp_tok_merged = dict(jp_tok)
-    jp_tok_merged.update({
-        _normalize_for_jp_cfg(k, jp_norm): v
-        for k, v in jp_ovr.items() if isinstance(v, str) and v.strip()
-    })
-    en_tok_merged = dict(en_tok)
-    en_tok_merged.update({
-        _normalize_for_en_cfg(k, en_norm): v
-        for k, v in en_ovr.items() if isinstance(v, str) and v.strip()
-    })
-
-    jp_tokens: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok_merged.items()}
-    en_tokens: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_tok_merged.items()}
+    jp_tokens: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok.items()}
+    en_tokens: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_tok.items()}
 
     return jp_index, en_index, jp_norm, en_norm, jp_tokens, en_tokens
