@@ -1,5 +1,5 @@
 {
-  "version": "v1.2.0",
+  "version": "v1.2.1",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -8,6 +8,7 @@
     "unify_slash_to": "/"
   },
   "overrides": {
+
 "a3": "エースリー",
 "akishobo": "アキショボウ",
 "alis": "アリス",
@@ -30,15 +31,14 @@
 "hametuha": "ハメツハ",
 "heart catch": "ハートキャッチ",
 "helpush": "ヘルプッシュ",
-"hitowa": "ヒトワ",
 "i7": "アイセブン",
+"ihtowa": "ヒトワ",
 "imagica lab.": "イマジカラボ",
 "kadokawa": "カドカワ",
 "kedama": "ケダマ",
 "keyaki works": "ケヤキワークス",
 "kushami": "クシャミ",
 "layerx": "レイヤーエックス",
-"l is b": "エルイズビー",
 "mgnet": "マグネット",
 "navicus": "ナビカス",
 "neorealx": "ネオリアルエックス",
@@ -59,6 +59,7 @@
 "tabibar&cafe": "タビバーカフェ",
 "tutti create": "ツッチクリエイト",
 "u-next": "ユーネクスト"
+    
     
   },
   "tokens": {
@@ -88,8 +89,8 @@
 "bookshop": "ブックショップ",
 "bp": "ビーピー",
 "bps": "ビーピーエス",
-"bros.": "ブラザーズ"
 "broadcasting": "ブロードキャスティング",
+"bros.": "ブラザーズ",
 "cafe": "カフェ",
 "carbide": "カーバイド",
 "catch": "キャッチ",
@@ -119,7 +120,6 @@
 "fictionera": "フィクショネラ",
 "fitness": "フィットネス",
 "flatte": "フラッテ",
-"for": "フォー",    
 "foundation": "ファウンデーション",
 "free": "フリー",
 "gacco": "ガッコ",
@@ -175,7 +175,6 @@
 "music": "ミュージック",
 "necoya": "ネコヤ",
 "news": "ニュース",
-"nex": "ネックス",
 "next": "ネクスト",
 "nhk": "エヌエイチケー",
 "nide": "ニード",
