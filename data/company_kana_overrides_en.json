@@ -1,5 +1,5 @@
 {
-  "version": "v1.2.2",
+  "version": "v1.2.3",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -127,6 +127,7 @@
 "google": "グーグル",
 "grand": "グランド",
 "gym": "ジム",
+"hakuhodo": "ハクホウドウ",
 "hanalee": "ハナレ",
 "happiness": "ハピネス",
 "hardware": "ハードウェア",
