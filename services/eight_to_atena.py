@@ -20,7 +20,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.4.10"
+__version__ = "v2.4.11"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -184,13 +184,31 @@ _COMPANY_TYPES = [
 ]
 
 def _strip_company_type(name: str) -> str:
-    base = (name or "").strip()
-    for t in _COMPANY_TYPES:
-        base = base.replace(t, "")
-    # 前後ノイズ記号を軽く除去
-    base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
-    base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・,，.．]+$", "", base)
-    return base
+		base = (name or "").strip()
+			if not base:
+					return ""
+			# “一般 社団 法人” のような途中スペースや全角/半角のゆれを許容
+			# 代表型だけ正規表現で叩き落とし、残りは従来の列挙置換でカバー
+			TYPE_PATTERNS = [
+					r"一\s*般\s*社\s*団\s*法\s*人",
+					r"一\s*般\s*財\s*団\s*法\s*人",
+					r"公\s*益\s*社\s*団\s*法\s*人",
+					r"公\s*益\s*財\s*団\s*法\s*人",
+					r"特\s*定\s*非\s*営\s*利\s*活\s*動\s*法\s*人"
+			]
+			# 全角/半角空白を共通視
+			sp = r"[ \u3000]*"
+			for pat in TYPE_PATTERNS:
+					base = re.sub(pat, "", base)
+			# 従来の列挙も最終的に実施（完全一致の揺れを潰す）
+			for t in _COMPANY_TYPES:
+					if t:
+					    base = base.replace(t, "")
+			# 前後ノイズ記号を軽く除去
+			base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
+			base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・,，.．]+$", "", base)
+			return base
+
 
 # ---- 会社名かな辞書（JP/EN）ローダ ----
 def _load_json(path: str) -> Any | None:
