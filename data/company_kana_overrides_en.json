@@ -1,5 +1,5 @@
 {
-  "version": "v1.2.1",
+  "version": "v1.2.2",
   "normalize": {
     "nfkc": true,
     "lower": true,
@@ -188,6 +188,7 @@
 "ogury": "オグリー",
 "ohako": "オハコ",
 "on": "オン",
+"one": "ワン",
 "onsen": "オンセン",
 "ozma": "オズマ",
 "pacific": "パシフィック",
@@ -204,6 +205,7 @@
 "radioya": "ラジオヤ",
 "rascasse": "ラスカス",
 "reading": "リーディング",
+"renea": "レネア",
 "repro": "レプロ",
 "reviews": "レビューズ",
 "saitama": "サイタマ",
