@@ -1,5 +1,5 @@
 {
-  "version": "v1.2.5",
+  "version": "v1.3",
   "normalize": {
     "nfkc": true,
     "strip_spaces": true,
