@@ -1,14 +1,17 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.6
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.7
 # - 既存ロジックは維持
-# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加（従来どおり）
-# - PARTIAL_ACRONYM_MAX_LEN（既定3）：略称の1文字読み上げを短い塊に限定（従来どおり）
-# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供（従来どおり）
-# - Kanji法人格（一般社団法人/一般財団法人 等）は空白・記号挟みでも除去（従来どおり）
-# - NEW(v2.5.6):
-#     * 英文法人格 (Co., Ltd. / Inc. / LLC / Corporation / Company 等) を正規表現＋IGNORECASE で追加剥離
-#     * 部分一致スキャナの英数字1文字読み上げを「ASCII英数字のみ」に限定し、位置ズレ/割込みを防止
-#       （prev/next判定も ASCII のみに揃える）
+# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋め
+# - PARTIAL_ACRONYM_MAX_LEN（既定3）：略称の1文字読み上げを短い塊に限定
+# - /selftest/company_kana 用に debug_company_kana(name) を提供
+# - Kanji法人格（一般社団法人/一般財団法人 など）：空白・記号挟みでも除去
+# - v2.5.6:
+#     * 部分一致スキャナで英数字1文字読み上げを ASCII 英数字みに限定
+# - v2.5.7:
+#     * 英文法人格 (Co., Ltd. / Inc. / LLC / Corporation / Company 等) の除去正規表現を修正
+#       - 空パターン混入バグを解消
+#       - 大文字小文字を問わず末尾・独立語として確実に除去
+#     * 日本語法人格除去ロジックは従来どおり維持（一般社団法人 等も完全除去）
 
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.5.6"
+__version__ = "v2.5.7"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -181,7 +184,7 @@ _COMPANY_TYPES = [
     "宗教法人","中間法人","特殊法人","特例民法法人",
     "特定目的会社","特定目的信託",
     "有限責任事業組合","有限責任中間法人","投資事業有限責任組合",
-    # 英語系（全角・半角の一部表記）※詳細は正規表現側で包括対応
+    # （英語系は下の正規表現で包括対応するので、ここは一部のみ）
     "LLC","ＬＬＣ","Inc","Inc.","Ｉｎｃ","Ｉｎｃ．","Co","Co.","Ｃｏ","Ｃｏ．",
     "Co., Ltd.","Ｃｏ．， Ｌｔｄ．","Co.,Ltd.","Ｃｏ．，Ｌｔｄ．",
     "Ltd","Ltd.","Ｌｔｄ","Ｌｔｄ．","Corporation","Ｃｏｒｐｏｒａｔｉｏｎ",
@@ -203,6 +206,7 @@ _KANJI_TYPE_PATTERNS = [
     ("学校","法人"),
     ("宗教","法人"),
 ]
+
 # 可変セパレータ（空白/全角空白/中点/スラッシュ/括弧/句読点/ダッシュ類）
 _VAR_SEP_CLASS = r"[\s\u3000\-‐─―－()\[\]【】／/・,，.．]*"
 
@@ -214,25 +218,19 @@ def _strip_company_type(name: str) -> str:
         if t:
             base = base.replace(t, "")
 
-    # 2) Kanji法人格（可変セパレータ対応）
+    # 2) Kanji 法人格の可変セパレータ対応除去
     for segs in _KANJI_TYPE_PATTERNS:
         pat = _VAR_SEP_CLASS.join(map(re.escape, segs))
         base = re.sub(pat, "", base)
 
-    # 3) 英文法人格を包括的に除去（大文字小文字無視）
-    #    Co., Ltd. / Co.,LTD. / Inc. / Corp. / LLC / Company / Corporation 等
+    # 3) 英文法人格（Co., Ltd. / Inc. / LLC / Corp. / Corporation / Company 等）の包括除去
+    #    - 大文字小文字を問わず
+    #    - 単語境界ベースで、主に末尾や独立語として出てくるパターンを削除
+    #    - 空パターンは含めない（v2.5.6 のバグ修正）
     base = re.sub(
-        r'\b(?:'
-        r'co|co\.|co\.,\s*ltd\.?|'      # Co / Co. / Co., Ltd / Co., LTD
-        r'ltd|ltd\.|'                   # Ltd / Ltd.
-        r'inc|inc\.|'                   # Inc / Inc.
-        r'corp|corp\.|corporation|'     # Corp / Corporation
-        r'company|'
-        r'llc'
-        r')\b\.?,?',
+        r'(?i)\b(?:co\.?,?\s*ltd\.?|co\.?|ltd\.?|inc\.?|corp\.?|corporation|company|llc)\b\.?,?',
         '',
-        base,
-        flags=re.IGNORECASE,
+        base
     )
 
     # 4) 前後ノイズ記号を除去
@@ -327,11 +325,12 @@ def _scan_view_jp(s: str) -> str:
     return "".join(out)
 
 _SEP_CHARS = set(" ／/・,&，,．.")
+
 def _is_sep(ch: str) -> bool:
     return ch in _SEP_CHARS or ch.isspace()
 
 def _is_ascii_alnum(ch: str) -> bool:
-    """ASCII 英数字のみ True（NFKC 後の全角は対象にしない）"""
+    """ASCII 英数字のみ True（NFKC 後の全角は対象にしない）。"""
     return ("a" <= ch <= "z") or ("0" <= ch <= "9")
 
 # ---- 人名辞書（フル/姓/名）ローダ ----
@@ -349,11 +348,14 @@ def _load_person_dicts() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]
 
     return pick_terms(full), pick_terms(surname), pick_terms(given)
 
-# ---- 会社名かな：左→右の最長一致スキャン（辞書→未マッチ推測→最後の保険で全体推測） ----
-def _company_kana(company_name: str,
-                  jp_index: Dict[str, str], en_index: Dict[str, str],
-                  jp_norm: Dict[str, Any], en_norm: Dict[str, Any],
-                  jp_tokens: Dict[str, str] | None = None, en_tokens: Dict[str, str] | None = None) -> str:
+# ---- 会社名かな生成 ----
+def _company_kana(
+    company_name: str,
+    jp_index: Dict[str, str], en_index: Dict[str, str],
+    jp_norm: Dict[str, Any], en_norm: Dict[str, Any],
+    jp_tokens: Dict[str, str] | None = None,
+    en_tokens: Dict[str, str] | None = None
+) -> str:
     base = (company_name or "").strip()
     if not base:
         return ""
@@ -421,7 +423,7 @@ def _company_kana(company_name: str,
                         matched = (tl, _clean_kana_symbols(jp_tokens[t]))
                         break
 
-            # EN tokens 最長一致（ASCII 英数字境界のみ有効）
+            # EN tokens 最長一致（ASCII 英数字境界のみ）
             if matched is None and en_tokens:
                 for t in en_keys:
                     tl = len(t)
@@ -455,7 +457,6 @@ def _company_kana(company_name: str,
                         if ch_en in en_tokens:
                             out_parts.append(_clean_kana_symbols(en_tokens[ch_en]))
                         else:
-                            # 対応がなければ元文字を gap として扱う
                             gap_buf.append(stripped[i + (k - i)])
                     i = j
                     continue
@@ -473,10 +474,13 @@ def _company_kana(company_name: str,
     return _clean_kana_symbols(_to_kata(stripped))
 
 # ---- 人名かな生成（フル最優先→姓/名トークン→推測） ----
-def _person_name_kana(last: str, first: str,
-                      full_over: Dict[str, str],
-                      surname_terms: Dict[str, str],
-                      given_terms: Dict[str, str]) -> tuple[str, str, str]:
+def _person_name_kana(
+    last: str,
+    first: str,
+    full_over: Dict[str, str],
+    surname_terms: Dict[str, str],
+    given_terms: Dict[str, str],
+) -> tuple[str, str, str]:
     last = (last or "").strip()
     first = (first or "").strip()
     full = f"{last}{first}"
@@ -552,7 +556,9 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         title = to_zenkaku_wide(title_raw)
 
         # 会社名かな
-        company_kana = _company_kana(company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK) or ""
+        company_kana = _company_kana(
+            company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK
+        ) or ""
 
         # 氏名かな
         last_kana, first_kana, full_name_kana = _person_name_kana(
@@ -611,7 +617,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     w.writerows(rows_out)
     return out.getvalue()
 
-# ==== minimal add-ons for version reporting (既存インターフェイス維持) ====
+# ==== minimal add-ons for version reporting ====
 def _read_json_version(*relative_candidate_paths: str) -> str | None:
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
@@ -662,7 +668,7 @@ def get_area_codes_version() -> str | None:
     except Exception:
         return None
 
-# ==== debug for company kana (/selftest/company_kana 用) ====
+# ==== debug for company kana (/selftest/company_kana) ====
 def debug_company_kana(name: str) -> Dict[str, Any]:
     JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK = _load_company_overrides()
     stripped = _strip_company_type(name or "")
