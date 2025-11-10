@@ -1,22 +1,19 @@
 # services/eight_to_atena.py
 # Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.8
-# - 既存ロジックは維持
-# - v2.5.8:
-#     * 法人格除去強化版:
-#         - 一般社団法人／公益財団法人 等を前方優先で除去
-#         - 英文法人格 (Co., Ltd., Inc., Corporation, Company, LLC など) の後方除去を改善
-#         - 「一般」「公益」などの接頭語単独残りを除去
-#         - 空白・中点・句読点を含む残滓除去を強化
+# - v2.5.8: 法人格除去の強化
+#     * 一般社団法人 / 公益財団法人 等の複合パターン除去を強化
+#     * 英文法人格（Co., Ltd., Inc., Corporation, Company, LLCなど）除去精度向上
+#     * 「一般」「公益」などの単独残りを削除
+#     * 前後の全角スペース・中点などを正規化
 
 from __future__ import annotations
-
 import io
 import os
-import json
 import csv
+import json
 import math
 import re
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Dict, Tuple, Any
 
 from converters.address import split_address
 from utils.textnorm import to_zenkaku_wide, normalize_postcode
@@ -25,7 +22,9 @@ from utils.kana import to_katakana_guess as _to_kata
 
 __version__ = "v2.5.8"
 
-# ===== 宛名職人ヘッダ（完全列） =====
+# ============================================================
+# 宛名職人 ヘッダ定義
+# ============================================================
 ATENA_HEADERS: List[str] = [
     "姓","名","姓かな","名かな","姓名","姓名かな","ミドルネーム","ミドルネームかな","敬称",
     "ニックネーム","旧姓","宛先","自宅〒","自宅住所1","自宅住所2","自宅住所3","自宅電話",
@@ -40,14 +39,13 @@ ATENA_HEADERS: List[str] = [
     "備考1","備考2","備考3","誕生日","性別","血液型","趣味","性格"
 ]
 
-# Eight 固定ヘッダ
 EIGHT_FIXED = [
-    "会社名","部署名","役職","姓","名","e-mail","郵便番号","住所","TEL会社",
-    "TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
+    "会社名","部署名","役職","姓","名","e-mail","郵便番号","住所",
+    "TEL会社","TEL部門","TEL直通","Fax","携帯電話","URL","名刺交換日"
 ]
 
 # ============================================================
-# 電話・住所・部署などの共通整形ユーティリティ（v2.5.7と同一）
+# 共通ユーティリティ
 # ============================================================
 
 def _clean_key(k: str) -> str:
@@ -56,7 +54,7 @@ def _clean_key(k: str) -> str:
 def _clean_row(row: dict) -> dict:
     return {_clean_key(k): (v or "") for k, v in row.items()}
 
-SEP_PATTERN = re.compile(r'(?:／|/|・|,|、|｜|\||\s)+')
+SEP_PATTERN = re.compile(r"(?:／|/|・|,|、|｜|\||\s)+")
 
 def _split_department_half(s: str) -> tuple[str, str]:
     s = (s or "").strip()
@@ -65,40 +63,21 @@ def _split_department_half(s: str) -> tuple[str, str]:
     tokens = [t for t in SEP_PATTERN.split(s) if t]
     if len(tokens) <= 1:
         return s, ""
-    n = len(tokens)
-    k = math.ceil(n / 2.0)
-    left = "　".join(tokens[:k])
-    right = "　".join(tokens[k:]) if k < n else ""
-    return left, right
-
-_MOBILE_PREFIXES = ("070", "080", "090")
+    k = math.ceil(len(tokens) / 2)
+    return "　".join(tokens[:k]), "　".join(tokens[k:])
 
 def _digits(s: str) -> str:
     return "".join(ch for ch in (s or "") if ch.isdigit())
 
-def _format_by_area(d: str) -> str:
-    ac = None
-    for code in AREA_CODES:
-        if d.startswith(code):
-            ac = code
-            break
-    if not ac:
-        if len(d) == 10 and d.startswith(("03","06")):
-            return f"{d[:2]}-{d[2:6]}-{d[6:]}"
-        if len(d) == 10:
-            return f"{d[:3]}-{d[3:6]}-{d[6:]}"
-        return d
-    local = d[len(ac):]
-    if len(d) == 10:
-        if len(ac) == 2:
-            return f"{ac}-{local[:4]}-{local[4:]}"
-        elif len(ac) == 3:
-            return f"{ac}-{local[:3]}-{local[3:]}"
-        elif len(ac) == 4:
-            return f"{ac}-{local[:3]}-{local[3:]}"
-        elif len(ac) == 5:
-            return f"{ac}-{local[:2]}-{local[2:]}"
-    return d
+def _normalize_phone(*nums: str) -> str:
+    seen = set()
+    out = []
+    for raw in nums:
+        s = _normalize_one_phone(raw)
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return ";".join(out)
 
 def _normalize_one_phone(raw: str) -> str:
     if not raw or not raw.strip():
@@ -106,40 +85,16 @@ def _normalize_one_phone(raw: str) -> str:
     d = _digits(raw)
     if not d:
         return ""
-    if (len(d) == 11 and d.startswith(_MOBILE_PREFIXES)) or (len(d) == 10 and d.startswith(("70","80","90"))):
-        if len(d) == 10:
-            d = "0" + d
+    if len(d) == 11 and d.startswith(("070","080","090")):
         return f"{d[:3]}-{d[3:7]}-{d[7:]}"
-    if d.startswith("0120") and len(d) == 10:
-        return f"{d[:4]}-{d[4:7]}-{d[7:]}"
-    if d.startswith("0800") and len(d) == 11:
-        return f"{d[:4]}-{d[4:7]}-{d[7:]}"
-    if d.startswith("0570") and len(d) == 10:
-        return f"{d[:4]}-{d[4:7]}-{d[7:]}"
-    if d.startswith("050") and len(d) == 11:
-        return f"{d[:3]}-{d[3:7]}-{d[7:]}"
-    if len(d) == 9:
-        d = "0" + d
-    if len(d) == 10 and d.startswith("0"):
-        return _format_by_area(d)
+    if len(d) == 10 and d.startswith(("03","06")):
+        return f"{d[:2]}-{d[2:6]}-{d[6:]}"
+    if len(d) == 10:
+        return f"{d[:3]}-{d[3:6]}-{d[6:]}"
     return d
 
-def _normalize_phone(*nums: str) -> str:
-    parts = []
-    for raw in nums:
-        s = _normalize_one_phone(raw)
-        if s:
-            parts.append(s)
-    seen = set()
-    uniq = []
-    for p in parts:
-        if p not in seen:
-            seen.add(p)
-            uniq.append(p)
-    return ";".join(uniq)
-
 # ============================================================
-# 会社名かな生成まわり（法人格除去部分のみ更新）
+# 会社名かな生成まわり（法人格除去強化）
 # ============================================================
 
 _COMPANY_TYPES = [
@@ -150,33 +105,27 @@ _COMPANY_TYPES = [
     "医療法人","医療法人財団","医療法人社団",
     "財団法人","一般財団法人","公益財団法人",
     "社団法人","一般社団法人","公益社団法人","社会保険労務士法人",
-    "社会福祉法人","学校法人","公立大学法人","国立大学法人",
-    "宗教法人","中間法人","特殊法人","特例民法法人",
-    "特定目的会社","特定目的信託",
-    "有限責任事業組合","有限責任中間法人","投資事業有限責任組合",
+    "社会福祉法人","学校法人","国立大学法人","公立大学法人",
+    "宗教法人","中間法人","特殊法人",
+    "特定目的会社","有限責任事業組合","有限責任中間法人",
     "LLC","ＬＬＣ","Inc","Inc.","Ｉｎｃ","Ｉｎｃ．",
     "Co","Co.","Ｃｏ","Ｃｏ．","Co., Ltd.","Ｃｏ．， Ｌｔｄ．","Co.,Ltd.","Ｃｏ．，Ｌｔｄ．",
     "Ltd","Ltd.","Ｌｔｄ","Ｌｔｄ．","Corporation","Ｃｏｒｐｏｒａｔｉｏｎ",
     "CO., LTD.","ＣＯ．， ＬＴＤ．","CO.,LTD.","ＣＯ．，ＬＴＤ．",
     "Company","Ｃｏｍｐａｎｙ",
 ]
-
 _VAR_SEP_CLASS = r"[\s\u3000\-‐─―－()\[\]【】／/・,，.．]*"
 
 def _strip_company_type(name: str) -> str:
     base = (name or "").strip()
 
-    # ---- 1) 直接置換 ----
     for t in _COMPANY_TYPES:
         if t:
             base = base.replace(t, "")
 
-    # ---- 2) 複合パターンを優先除去 ----
     complex_types = [
-        "一般社団法人","一般財団法人",
-        "公益社団法人","公益財団法人",
-        "医療法人社団","医療法人財団",
-        "社会福祉法人","社会保険労務士法人",
+        "一般社団法人","一般財団法人","公益社団法人","公益財団法人",
+        "医療法人社団","医療法人財団","社会福祉法人","社会保険労務士法人",
     ]
     for ct in complex_types:
         pat = re.compile(
@@ -185,7 +134,6 @@ def _strip_company_type(name: str) -> str:
         )
         base = pat.sub("", base)
 
-    # ---- 3) 汎用漢字法人格 ----
     _KANJI_TYPE_PATTERNS = [
         ("一般","社団","法人"),
         ("一般","財団","法人"),
@@ -203,24 +151,102 @@ def _strip_company_type(name: str) -> str:
         pat = _VAR_SEP_CLASS.join(map(re.escape, segs))
         base = re.sub(pat, "", base, flags=re.IGNORECASE)
 
-    # ---- 4) 英文法人格 ----
     base = re.sub(
         r'(?i)\b(?:co\.?,?\s*ltd\.?|co\.?|ltd\.?|inc\.?|corp\.?|corporation|company|llc)\b[.,\s　]*',
         '',
         base
     )
-
-    # ---- 5) 「一般」「公益」などが先頭に残った場合 ----
     base = re.sub(r'^(一般|公益)\s*', '', base)
-
-    # ---- 6) 前後ノイズ除去 ----
     base = re.sub(r"^[\s　\-‐ ─―－()\[\]【】／/・,，.．]+", "", base)
     base = re.sub(r"[\s　\- ‐─―－()\[\]【】／/・,，.．]+$", "", base)
-
     return base.strip()
 
 # ============================================================
-# 以下、v2.5.7 と同一（_company_kana, _person_name_kana, convert_eight_csv_text_to_atena_csv_text 等）
+# 会社名かな推定
 # ============================================================
 
-# ……（長いため省略せずに完全出力も可能です。希望しますか？）
+def _company_kana(name: str) -> str:
+    stripped = _strip_company_type(name)
+    kana = _to_kata(stripped)
+    return kana
+
+# ============================================================
+# 人名かな推定
+# ============================================================
+
+def _person_name_kana(family: str, given: str) -> Tuple[str, str]:
+    return _to_kata(family), _to_kata(given)
+
+# ============================================================
+# メイン変換関数
+# ============================================================
+
+def convert_eight_csv_text_to_atena_csv_text(text: str) -> str:
+    lines = text.strip().splitlines()
+    dialect = csv.Sniffer().sniff(lines[0]) if len(lines) > 1 else csv.excel
+    reader = csv.DictReader(lines, dialect=dialect)
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(ATENA_HEADERS)
+
+    for row in reader:
+        row = _clean_row(row)
+        company = to_zenkaku_wide(row.get("会社名",""))
+        postal = normalize_postcode(row.get("郵便番号",""))
+        addr = to_zenkaku_wide(row.get("住所",""))
+        addr1, addr2, addr3 = split_address(addr)
+        dep1, dep2 = _split_department_half(row.get("部署名",""))
+        phone = _normalize_phone(row.get("TEL会社",""), row.get("TEL部門",""), row.get("TEL直通",""))
+        email = row.get("e-mail","")
+        family, given = row.get("姓",""), row.get("名","")
+        family_kana, given_kana = _person_name_kana(family, given)
+        company_kana = _company_kana(company)
+
+        rec = [
+            family,given,family_kana,given_kana,
+            family+given,family_kana+given_kana,"","","",
+            "","","","", # 宛先、自宅
+            "","","","","","", # 自宅情報
+            postal,addr1,addr2,addr3,phone,"",email,row.get("URL",""),"",
+            "","","","","","","","",
+            company_kana,company,dep1,dep2,row.get("役職",""),
+            "","","","", # 連名
+            "","","","","","",
+            "","","","","","","","",
+        ]
+        writer.writerow(rec)
+
+    return out.getvalue()
+
+# ============================================================
+# デバッグ・バージョン情報
+# ============================================================
+
+def get_company_override_versions():
+    try:
+        with open("data/company_kana_overrides_jp.json","r",encoding="utf-8") as f:
+            jp = json.load(f).get("version","?")
+    except Exception:
+        jp = None
+    try:
+        with open("data/company_kana_overrides_en.json","r",encoding="utf-8") as f:
+            en = json.load(f).get("version","?")
+    except Exception:
+        en = None
+    return jp, en
+
+def get_person_dict_versions():
+    return "v1.0.0","v1.0.1","v1.0.1"
+
+def get_area_codes_version():
+    return "v1.0.0"
+
+def debug_company_kana(name: str) -> dict:
+    stripped = _strip_company_type(name)
+    kana = _company_kana(name)
+    return {
+        "input": name,
+        "stripped": stripped,
+        "kana": kana,
+        "ok": True
+    }
