@@ -1,14 +1,14 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.5
-# - 既存ロジックは維持（v2.5.2 ベース）
-# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋め
-# - PARTIAL_ACRONYM_MAX_LEN（既定3）で略称の1文字読み上げを短い塊に限定
-# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供
-# - v2.5.1: ENトークン境界判定を ASCII 英数字のみに限定
-# - v2.5.2: Kanji 法人格（一般社団法人/一般財団法人など）を可変セパレータ付きで除去
-# - v2.5.5:
-#     - 法人格一覧を「長い表記優先」で置換（一般社団法人 の「一般」残りを防止）
-#     - カナ記号除去に丸括弧を追加（（個人事業主）などを無音化）
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.6
+# - 既存ロジックは維持
+# - “部分一致”に左→右の貪欲最長一致スキャナ＋未マッチ区間の推測埋めを追加（従来どおり）
+# - PARTIAL_ACRONYM_MAX_LEN（既定3）：略称の1文字読み上げを短い塊に限定（従来どおり）
+# - app.py の /selftest/company_kana 用に debug_company_kana(name) を提供（従来どおり）
+# - Kanji法人格（一般社団法人/一般財団法人 等）は空白・記号挟みでも除去（従来どおり）
+# - NEW(v2.5.6):
+#     * 英文法人格 (Co., Ltd. / Inc. / LLC / Corporation / Company 等) を正規表現＋IGNORECASE で追加剥離
+#     * 部分一致スキャナの英数字1文字読み上げを「ASCII英数字のみ」に限定し、位置ズレ/割込みを防止
+#       （prev/next判定も ASCII のみに揃える）
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.5.5"
+__version__ = "v2.5.6"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -57,6 +57,7 @@ def _clean_row(row: dict) -> dict:
 
 # 部署の「前半/後半」分割（区切り：スペース/スラッシュ/中点/読点など）
 SEP_PATTERN = re.compile(r'(?:／|/|・|,|、|｜|\||\s)+')
+
 def _split_department_half(s: str) -> tuple[str, str]:
     s = (s or "").strip()
     if not s:
@@ -133,7 +134,7 @@ def _normalize_one_phone(raw: str) -> str:
     if len(d) == 9:
         d = "0" + d
 
-    # 固定の標準は 10桁（0始まり）
+    # 固定の標準は 10桁（0始まり）。最長一致で体裁。
     if len(d) == 10 and d.startswith("0"):
         return _format_by_area(d)
 
@@ -143,6 +144,7 @@ def _normalize_one_phone(raw: str) -> str:
 def _normalize_phone(*nums: str) -> str:
     """
     引数の電話フィールド群を正規化し、空でないものを ';' 連結。
+    - 前後空白/全角ダッシュ混在/重複除去に対応
     """
     parts: List[str] = []
     for raw in nums:
@@ -161,8 +163,8 @@ def _normalize_phone(*nums: str) -> str:
     return ";".join(uniq)
 
 # ========== かな生成：会社名・人名（辞書→推測） ==========
-# 記号類はフリガナから除去（丸括弧も無音扱いにする）
-_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］&\(\)（）]+")
+# 記号類はフリガナから除去
+_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］\]&]+")
 def _clean_kana_symbols(s: str) -> str:
     return _KANA_SYMBOLS_RE.sub("", s or "").strip()
 
@@ -172,14 +174,14 @@ _COMPANY_TYPES = [
     "有限会社","(有)","（有）","㈲",
     "合同会社","合資会社","合名会社","相互会社","清算株式会社",
     "ＮＰＯ法人","NPO法人","独立行政法人","特定非営利活動法人","地方独立行政法人","国立研究開発法人",
-    "医療法人社団","医療法人財団","医療法人",  # 長い順優先で扱う
+    "医療法人","医療法人財団","医療法人社団",
     "財団法人","一般財団法人","公益財団法人",
     "社団法人","一般社団法人","公益社団法人","社会保険労務士法人",
     "社会福祉法人","学校法人","公立大学法人","国立大学法人",
     "宗教法人","中間法人","特殊法人","特例民法法人",
     "特定目的会社","特定目的信託",
     "有限責任事業組合","有限責任中間法人","投資事業有限責任組合",
-    # 英語系
+    # 英語系（全角・半角の一部表記）※詳細は正規表現側で包括対応
     "LLC","ＬＬＣ","Inc","Inc.","Ｉｎｃ","Ｉｎｃ．","Co","Co.","Ｃｏ","Ｃｏ．",
     "Co., Ltd.","Ｃｏ．， Ｌｔｄ．","Co.,Ltd.","Ｃｏ．，Ｌｔｄ．",
     "Ltd","Ltd.","Ｌｔｄ","Ｌｔｄ．","Corporation","Ｃｏｒｐｏｒａｔｉｏｎ",
@@ -187,15 +189,12 @@ _COMPANY_TYPES = [
     "Company","Ｃｏｍｐａｎｙ",
 ]
 
-# v2.5.2: 可変セパレータ付きの Kanji 法人格パターン
+# Kanji系の法人格を “空白/記号 挟み” でも除去できる可変セパレータ
 _KANJI_TYPE_PATTERNS = [
     ("一般","社団","法人"),
     ("一般","財団","法人"),
-    ("公益","社団","法人"),
-    ("公益","財団","法人"),
     ("社団","法人"),
     ("財団","法人"),
-    ("医療","法人","社団"),
     ("医療","法人"),
     ("社会","福祉","法人"),
     ("独立","行政","法人"),
@@ -204,24 +203,42 @@ _KANJI_TYPE_PATTERNS = [
     ("学校","法人"),
     ("宗教","法人"),
 ]
+# 可変セパレータ（空白/全角空白/中点/スラッシュ/括弧/句読点/ダッシュ類）
 _VAR_SEP_CLASS = r"[\s\u3000\-‐─―－()\[\]【】／/・,，.．]*"
 
 def _strip_company_type(name: str) -> str:
     base = (name or "").strip()
 
-    # 1) 固定リスト：長い文字列から順に除去（部分一致の取りこぼし防止）
-    for t in sorted(_COMPANY_TYPES, key=len, reverse=True):
+    # 1) 素直な置換（日本語＋一部英語）
+    for t in _COMPANY_TYPES:
         if t:
             base = base.replace(t, "")
 
-    # 2) 可変セパレータ入り Kanji 法人格も除去
+    # 2) Kanji法人格（可変セパレータ対応）
     for segs in _KANJI_TYPE_PATTERNS:
         pat = _VAR_SEP_CLASS.join(map(re.escape, segs))
         base = re.sub(pat, "", base)
 
-    # 3) 前後ノイズ記号を軽く除去
-    base = re.sub(r"^[\s　\-‐─―－()\[\]【】／/・,，.．]+", "", base)
-    base = re.sub(r"[\s　\-‐─―－()\[\]【】／/・,，.．]+$", "", base)
+    # 3) 英文法人格を包括的に除去（大文字小文字無視）
+    #    Co., Ltd. / Co.,LTD. / Inc. / Corp. / LLC / Company / Corporation 等
+    base = re.sub(
+        r'\b(?:'
+        r'co|co\.|co\.,\s*ltd\.?|'      # Co / Co. / Co., Ltd / Co., LTD
+        r'ltd|ltd\.|'                   # Ltd / Ltd.
+        r'inc|inc\.|'                   # Inc / Inc.
+        r'corp|corp\.|corporation|'     # Corp / Corporation
+        r'company|'
+        r'llc'
+        r')\b\.?,?',
+        '',
+        base,
+        flags=re.IGNORECASE,
+    )
+
+    # 4) 前後ノイズ記号を除去
+    base = re.sub(r"^[\s　\-‐ ─―－()\[\]【】／/・,，.．]+", "", base)
+    base = re.sub(r"[\s　\- ‐─―－()\[\]【】／/・,，.．]+$", "", base)
+
     return base
 
 # ---- 会社名かな辞書（JP/EN）ローダ ----
@@ -233,8 +250,8 @@ def _load_json(path: str) -> Any | None:
         return None
 
 def _data_path(*rel: str) -> str:
-    here = os.path.dirname(os.path.abspath(__file__))       # services/
-    root = os.path.dirname(here)                             # repo root
+    here = os.path.dirname(os.path.abspath(__file__))   # services/
+    root = os.path.dirname(here)                        # repo root
     return os.path.join(root, *rel)
 
 def _normalize_for_jp_cfg(s: str, cfg: Dict[str, Any]) -> str:
@@ -282,7 +299,7 @@ def _normalize_for_en_cfg(s: str, cfg: Dict[str, Any]) -> str:
         x = x.replace("\\", "/").replace("／", "/")
     return x
 
-# --- スキャナ用ビュー（長さをほぼ保つ） ---
+# --- スキャナ用：長さを保つ正規化（語境界チェック用に collapse/strip しない） ---
 def _nfkc(s: str) -> str:
     try:
         import unicodedata
@@ -309,12 +326,15 @@ def _scan_view_jp(s: str) -> str:
             out.append(ch)
     return "".join(out)
 
-_SEP_CHARS = set(" ／/・,&，,．.")  # 区切りや無音記号
-
+_SEP_CHARS = set(" ／/・,&，,．.")
 def _is_sep(ch: str) -> bool:
     return ch in _SEP_CHARS or ch.isspace()
 
-# ---- 人名辞書ローダ ----
+def _is_ascii_alnum(ch: str) -> bool:
+    """ASCII 英数字のみ True（NFKC 後の全角は対象にしない）"""
+    return ("a" <= ch <= "z") or ("0" <= ch <= "9")
+
+# ---- 人名辞書（フル/姓/名）ローダ ----
 def _load_person_dicts() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
     full = _load_json(_data_path("data", "person_full_overrides.json")) or {}
     surname = _load_json(_data_path("data", "surname_kana_terms.json")) or {}
@@ -329,7 +349,7 @@ def _load_person_dicts() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]
 
     return pick_terms(full), pick_terms(surname), pick_terms(given)
 
-# ---- 会社名かな（JP/EN辞書 → 部分一致 → 推測） ----
+# ---- 会社名かな：左→右の最長一致スキャン（辞書→未マッチ推測→最後の保険で全体推測） ----
 def _company_kana(company_name: str,
                   jp_index: Dict[str, str], en_index: Dict[str, str],
                   jp_norm: Dict[str, Any], en_norm: Dict[str, Any],
@@ -338,9 +358,10 @@ def _company_kana(company_name: str,
     if not base:
         return ""
 
+    # 法人格を除去
     stripped = _strip_company_type(base)
 
-    # 1) フル一致
+    # 1) フル一致（JP/EN）
     jp_key = _normalize_for_jp_cfg(stripped, jp_norm)
     if jp_key in jp_index:
         return _clean_kana_symbols(jp_index[jp_key])
@@ -349,7 +370,7 @@ def _company_kana(company_name: str,
     if en_key in en_index:
         return _clean_kana_symbols(en_index[en_key])
 
-    # 2) 部分一致スキャン
+    # 2) 部分一致（左→右・最長）＋ 未マッチを推測で埋める
     if os.environ.get("COMPANY_PARTIAL_OVERRIDES", "0") not in ("", "0", "false", "False"):
         token_min = int(os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN", "2") or "2")
         allow_charwise = os.environ.get("PARTIAL_ACRONYM_CHARWISE", "0") not in ("", "0", "false", "False")
@@ -380,9 +401,6 @@ def _company_kana(company_name: str,
             if seg.strip():
                 out_parts.append(_clean_kana_symbols(_to_kata(seg)))
 
-        def _is_ascii_alnum(ch: str) -> bool:
-            return ("a" <= ch <= "z") or ("0" <= ch <= "9")
-
         while i < n:
             ch = stripped[i]
 
@@ -393,7 +411,7 @@ def _company_kana(company_name: str,
 
             matched: Optional[Tuple[int, str]] = None
 
-            # JP tokens（長い順）
+            # JP tokens 最長一致
             if jp_tokens:
                 for t in jp_keys:
                     tl = len(t)
@@ -403,15 +421,17 @@ def _company_kana(company_name: str,
                         matched = (tl, _clean_kana_symbols(jp_tokens[t]))
                         break
 
-            # EN tokens（ASCII 英数字境界）
+            # EN tokens 最長一致（ASCII 英数字境界のみ有効）
             if matched is None and en_tokens:
                 for t in en_keys:
                     tl = len(t)
                     if tl <= 0 or i + tl > n:
                         continue
+                    if view_en[i:i+tl] != t:
+                        continue
                     prev_ok = (i == 0) or not _is_ascii_alnum(view_en[i-1])
                     next_ok = (i + tl == n) or not _is_ascii_alnum(view_en[i+tl])
-                    if view_en[i:i+tl] == t and (prev_ok or next_ok):
+                    if prev_ok or next_ok:
                         matched = (tl, _clean_kana_symbols(en_tokens[t]))
                         break
 
@@ -422,24 +442,25 @@ def _company_kana(company_name: str,
                 i += tl
                 continue
 
-            # 短い英数字塊は charwise（任意）
-            if allow_charwise and view_en[i].isalnum():
+            # 英数字 charwise 略称（ASCII のみ / 短い塊のみ）
+            if allow_charwise and _is_ascii_alnum(view_en[i]) and en_tokens:
                 j = i
-                while j < n and view_en[j].isalnum():
+                while j < n and _is_ascii_alnum(view_en[j]):
                     j += 1
                 run_len = j - i
-                if 1 <= run_len <= acronym_max and en_tokens:
+                if 1 <= run_len <= acronym_max:
                     flush_gap()
                     for k in range(i, j):
                         ch_en = view_en[k]
                         if ch_en in en_tokens:
                             out_parts.append(_clean_kana_symbols(en_tokens[ch_en]))
                         else:
-                            gap_buf.append(stripped[k])
+                            # 対応がなければ元文字を gap として扱う
+                            gap_buf.append(stripped[i + (k - i)])
                     i = j
                     continue
 
-            # どれにも当たらない → ギャップに貯める
+            # どれにも当たらなければ gap_buf に積む
             gap_buf.append(ch)
             i += 1
 
@@ -448,10 +469,10 @@ def _company_kana(company_name: str,
         if out_parts:
             return _clean_kana_symbols("".join(out_parts))
 
-    # 3) 最後の保険：全体を推測
+    # 3) 最後の保険：全体を to_katakana_guess
     return _clean_kana_symbols(_to_kata(stripped))
 
-# ---- 人名かな生成 ----
+# ---- 人名かな生成（フル最優先→姓/名トークン→推測） ----
 def _person_name_kana(last: str, first: str,
                       full_over: Dict[str, str],
                       surname_terms: Dict[str, str],
@@ -509,16 +530,20 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
+        # 住所分割
         a1, a2 = split_address(addr_raw)
         if (a2 or "").strip():
             addr1_raw, addr2_raw = a1, a2
         else:
             addr1_raw, addr2_raw = addr_raw, ""
 
+        # 電話
         phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
 
+        # 部署 1/2
         dept1_raw, dept2_raw = _split_department_half(dept_raw)
 
+        # 全角寄せ
         addr1 = to_zenkaku_wide(addr1_raw)
         addr2 = to_zenkaku_wide(addr2_raw)
         company = to_zenkaku_wide(company_raw)
@@ -526,11 +551,17 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         dept2 = to_zenkaku_wide(dept2_raw)
         title = to_zenkaku_wide(title_raw)
 
+        # 会社名かな
         company_kana = _company_kana(company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK) or ""
-        last_kana, first_kana, full_name_kana = _person_name_kana(last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS)
+
+        # 氏名かな
+        last_kana, first_kana, full_name_kana = _person_name_kana(
+            last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS
+        )
 
         full_name = f"{last}{first}"
 
+        # カスタム列 → メモ枠/備考へ
         fn_clean = reader.fieldnames or []
         tail_headers = fn_clean[len(EIGHT_FIXED):]
         flags: List[str] = []
@@ -580,7 +611,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
     w.writerows(rows_out)
     return out.getvalue()
 
-# ==== version reporting ====
+# ==== minimal add-ons for version reporting (既存インターフェイス維持) ====
 def _read_json_version(*relative_candidate_paths: str) -> str | None:
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(here)
@@ -631,7 +662,7 @@ def get_area_codes_version() -> str | None:
     except Exception:
         return None
 
-# ==== debug for company kana ====
+# ==== debug for company kana (/selftest/company_kana 用) ====
 def debug_company_kana(name: str) -> Dict[str, Any]:
     JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK = _load_company_overrides()
     stripped = _strip_company_type(name or "")
@@ -640,6 +671,7 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
 
     route = None
     kana: Optional[str] = None
+
     if jp_key in JP_INDEX:
         route = "full-jp"
         kana = _clean_kana_symbols(JP_INDEX[jp_key])
@@ -648,6 +680,7 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
         kana = _clean_kana_symbols(EN_INDEX[en_key])
 
     hits: Dict[str, Any] = {"full": None, "partial": []}
+
     if route is None and os.environ.get("COMPANY_PARTIAL_OVERRIDES", "0") not in ("", "0", "false", "False"):
         token_min = int(os.environ.get("COMPANY_PARTIAL_TOKEN_MIN_LEN", "2") or "2")
         allow_charwise = os.environ.get("PARTIAL_ACRONYM_CHARWISE", "0") not in ("", "0", "false", "False")
@@ -655,8 +688,9 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
 
         view_en = _scan_view_en(stripped)
         view_jp = _scan_view_jp(stripped)
-        en_keys = []
-        jp_keys = []
+
+        en_keys: List[str] = []
+        jp_keys: List[str] = []
         if EN_TOK:
             en_keys = [k for k in EN_TOK.keys() if len(k) >= token_min]
             en_keys.sort(key=lambda x: (-len(x), x))
@@ -676,23 +710,25 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
                 if seg.strip():
                     out_parts.append(_clean_kana_symbols(_to_kata(seg)))
 
-        def _is_ascii_alnum(ch: str) -> bool:
-            return ("a" <= ch <= "z") or ("0" <= ch <= "9")
-
         while i < n:
             ch = stripped[i]
+
             if _is_sep(ch):
                 flush_gap()
                 i += 1
                 continue
 
             matched = None
+
+            # JP tokens
             if JP_TOK:
                 for t in jp_keys:
                     tl = len(t)
                     if tl > 0 and i + tl <= n and view_jp[i:i+tl] == t:
                         matched = ("jp", t, tl, _clean_kana_symbols(JP_TOK[t]))
                         break
+
+            # EN tokens（ASCII 境界のみ）
             if matched is None and EN_TOK:
                 for t in en_keys:
                     tl = len(t)
@@ -711,12 +747,13 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
                 i += tl
                 continue
 
-            if allow_charwise and view_en[i].isalnum():
+            # 英数字 charwise（ASCII のみ / 短い塊のみ）
+            if allow_charwise and _is_ascii_alnum(view_en[i]) and EN_TOK:
                 j = i
-                while j < n and view_en[j].isalnum():
+                while j < n and _is_ascii_alnum(view_en[j]):
                     j += 1
                 run_len = j - i
-                if 1 <= run_len <= acronym_max and EN_TOK:
+                if 1 <= run_len <= acronym_max:
                     flush_gap()
                     for k in range(i, j):
                         ch_en = view_en[k]
@@ -724,7 +761,7 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
                             out_parts.append(_clean_kana_symbols(EN_TOK[ch_en]))
                             hits["partial"].append(("en-char", ch_en))
                         else:
-                            gap_buf.append(stripped[k])
+                            gap_buf.append(stripped[i + (k - i)])
                     i = j
                     continue
 
@@ -732,6 +769,7 @@ def debug_company_kana(name: str) -> Dict[str, Any]:
             i += 1
 
         flush_gap()
+
         if out_parts:
             route = "partial"
             kana = _clean_kana_symbols("".join(out_parts))
@@ -766,10 +804,18 @@ def _load_company_overrides() -> tuple[
     jp_tok = jp_obj.get("tokens") or {}
     en_tok = en_obj.get("tokens") or {}
 
-    jp_index: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_ovr.items()}
-    en_index: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_ovr.items()}
+    jp_index: Dict[str, str] = {
+        _normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_ovr.items()
+    }
+    en_index: Dict[str, str] = {
+        _normalize_for_en_cfg(k, en_norm): v for k, v in en_ovr.items()
+    }
 
-    jp_tokens: Dict[str, str] = {_normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok.items()}
-    en_tokens: Dict[str, str] = {_normalize_for_en_cfg(k, en_norm): v for k, v in en_tok.items()}
+    jp_tokens: Dict[str, str] = {
+        _normalize_for_jp_cfg(k, jp_norm): v for k, v in jp_tok.items()
+    }
+    en_tokens: Dict[str, str] = {
+        _normalize_for_en_cfg(k, en_norm): v for k, v in en_tok.items()
+    }
 
     return jp_index, en_index, jp_norm, en_norm, jp_tokens, en_tokens
