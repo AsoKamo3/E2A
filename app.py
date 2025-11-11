@@ -1,15 +1,15 @@
 # app.py
-# Eight → 宛名職人 変換 v1.4.2
+# Eight → 宛名職人 変換 v1.4.3
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
 # - selftest/company_kana を堅牢化（例外を JSON で返す）
 # - v1.3.0: HEAD / に対応
 # - v1.4.0: 人名かな確認フロー /convert_review + /download_reviewed 追加
-# - v1.4.1: 人名かな確認画面では「姓 / 名 / 姓かな / 名かな」だけ表示し、
-#            その他の列は hidden で保持して再CSV化
-# - v1.4.2: /download_reviewed で CSV 未送信になる不具合修正
-#            （JS submit ハンドラで event を正しく受け取り、失敗時に preventDefault）
+# - v1.4.1: 確認画面には 姓/名/姓かな/名かな のみ表示し、他列は裏で保持
+# - v1.4.2: JS submit handler の event 未定義バグ修正
+# - v1.4.3: レビューCSVが空になる問題を解消
+#            （headers/rows を script 内で直接 JS 配列として保持し、hidden JSON パース依存を廃止）
 
 import io
 import os
@@ -28,7 +28,7 @@ from services.eight_to_atena import (
     debug_company_kana,
 )
 
-VERSION = "v1.4.2"
+VERSION = "v1.4.3"
 
 INDEX_HTML = """
 <!doctype html>
@@ -131,9 +131,6 @@ REVIEW_HTML = """
     </div>
 
     <form id="review-form" method="post" action="/download_reviewed">
-      <!-- 元のヘッダと全行データを hidden で保持 -->
-      <input type="hidden" id="orig-headers" value='{{ headers|tojson|e }}'>
-      <input type="hidden" id="orig-rows" value='{{ rows|tojson|e }}'>
       <input type="hidden" name="csv" id="csv-input">
 
       <div class="scroll-wrap">
@@ -166,71 +163,69 @@ REVIEW_HTML = """
     </form>
   </div>
 
-  {% raw %}
   <script>
-  (function() {
+    // サーバ側で埋め込んだ headers / rows を、そのまま JS の配列として保持
+    var HEADERS = {{ headers|tojson }};
+    var ROWS = {{ rows|tojson }};
+
     function toCsvValue(v) {
       if (v == null) return "";
       v = String(v);
       if (v.indexOf('"') !== -1 || v.indexOf(",") !== -1 ||
-          v.indexOf("\n") !== -1 || v.indexOf("\r") !== -1) {
+          v.indexOf("\\n") !== -1 || v.indexOf("\\r") !== -1) {
         v = '"' + v.replace(/"/g, '""') + '"';
       }
       return v;
     }
 
-    var form = document.getElementById("review-form");
-    form.addEventListener("submit", function(event) {
-      var headersJson = document.getElementById("orig-headers").value || "[]";
-      var rowsJson = document.getElementById("orig-rows").value || "[]";
+    (function() {
+      var form = document.getElementById("review-form");
+      var csvInput = document.getElementById("csv-input");
 
-      var headers, rows;
-      try {
-        headers = JSON.parse(headersJson);
-        rows = JSON.parse(rowsJson);
-      } catch (e) {
-        alert("内部データの読み込みに失敗しました。ページをリロードしてください。");
-        event.preventDefault();
-        return;
-      }
-
-      var trs = document.querySelectorAll("tbody tr");
-      for (var i = 0; i < trs.length; i++) {
-        var tr = trs[i];
-        var rowIndex = parseInt(tr.getAttribute("data-index"), 10);
-        if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= rows.length) continue;
-        var row = rows[rowIndex];
-        var inputs = tr.querySelectorAll("input[data-col]");
-        for (var j = 0; j < inputs.length; j++) {
-          var input = inputs[j];
-          var col = parseInt(input.getAttribute("data-col"), 10);
-          if (!isNaN(col) && col >= 0 && col < row.length) {
-            row[col] = input.value;
+      form.addEventListener("submit", function(event) {
+        try {
+          var trs = document.querySelectorAll("tbody tr");
+          for (var i = 0; i < trs.length; i++) {
+            var tr = trs[i];
+            var rowIndex = parseInt(tr.getAttribute("data-index"), 10);
+            if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= ROWS.length) continue;
+            var row = ROWS[rowIndex];
+            var inputs = tr.querySelectorAll("input[data-col]");
+            for (var j = 0; j < inputs.length; j++) {
+              var input = inputs[j];
+              var col = parseInt(input.getAttribute("data-col"), 10);
+              if (!isNaN(col) && col >= 0 && col < row.length) {
+                row[col] = input.value;
+              }
+            }
           }
-        }
-      }
 
-      var outLines = [];
-      outLines.push(headers.map(toCsvValue).join(","));
-      for (var r = 0; r < rows.length; r++) {
-        var row = rows[r];
-        while (row.length < headers.length) {
-          row.push("");
-        }
-        var line = [];
-        for (var c = 0; c < headers.length; c++) {
-          line.push(toCsvValue(row[c]));
-        }
-        outLines.push(line.join(","));
-      }
+          // CSV 再構成
+          var outLines = [];
+          outLines.push(HEADERS.map(toCsvValue).join(","));
+          for (var r = 0; r < ROWS.length; r++) {
+            var row = ROWS[r].slice(); // コピーして長さ調整
+            while (row.length < HEADERS.length) {
+              row.push("");
+            }
+            var line = [];
+            for (var c = 0; c < HEADERS.length; c++) {
+              line.push(toCsvValue(row[c]));
+            }
+            outLines.push(line.join(","));
+          }
 
-      var csvText = outLines.join("\n");
-      document.getElementById("csv-input").value = csvText;
-      // ここでは preventDefault しない。hidden に csv を入れた上で通常 submit。
-    });
-  })();
+          var csvText = outLines.join("\\n");
+          csvInput.value = csvText;
+          // ここで submit 続行（preventDefaultしない）
+
+        } catch (e) {
+          alert("CSV の生成中にエラーが発生しました: " + e);
+          event.preventDefault();
+        }
+      });
+    })();
   </script>
-  {% endraw %}
 </body>
 </html>
 """
