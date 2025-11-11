@@ -1,24 +1,20 @@
 # app.py
-# Eight → 宛名職人 変換 v1.3.0
+# Eight → 宛名職人 変換 v1.4.0
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
 # - selftest/company_kana を堅牢化（例外を JSON で返す）
-# - v1.2.3 の index() 実装を復活＋ HEAD / に 200 を返すよう対応
+# - v1.3.0: HEAD / に対応
+# - v1.4.0: 人名かな確認用フロー /convert_review + /download_reviewed を追加
+#            （変換ロジック本体は変更しない）
 
 import io
 import os
 import json
+import csv
 import traceback
 from datetime import datetime
-from flask import (
-    Flask,
-    request,
-    render_template_string,
-    send_file,
-    abort,
-    jsonify,
-)
+from flask import Flask, request, render_template_string, send_file, abort, jsonify
 
 from services.eight_to_atena import (
     convert_eight_csv_text_to_atena_csv_text,
@@ -29,7 +25,7 @@ from services.eight_to_atena import (
     debug_company_kana,
 )
 
-VERSION = "v1.3.0"
+VERSION = "v1.4.0"
 
 INDEX_HTML = """
 <!doctype html>
@@ -43,20 +39,33 @@ INDEX_HTML = """
     h1 { font-size: 20px; margin-top: 0; }
     input[type=file] { margin: 12px 0; }
     button { padding: 10px 16px; border: 0; border-radius: 8px; background: #0b6; color: #fff; font-weight: 600; cursor: pointer; }
+    button.secondary { background: #06c; }
     .muted { color: #666; font-size: 12px; }
     .verbox { background: #f7f7f7; border: 1px solid #eee; border-radius: 8px; padding: 10px 12px; margin: 12px 0 0; }
     .verbox code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
     .grid { display: grid; grid-template-columns: 240px 1fr; gap: 6px 12px; align-items: baseline; }
     .label { color: #444; }
+    form { margin-bottom: 12px; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>Eight → 宛名職人 変換</h1>
+
+    <!-- 従来フロー：即ダウンロード -->
     <form method="post" action="/convert" enctype="multipart/form-data">
       <input type="file" name="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" required />
       <div class="muted">UTF-8 の Eightエクスポート（CSV/TSV）を選択してください。区切りは自動判定します。</div>
-      <p><button type="submit">変換してダウンロード</button></p>
+      <p><button type="submit">そのまま変換してダウンロード</button></p>
+    </form>
+
+    <!-- 新フロー：人名かな確認後にダウンロード -->
+    <form method="post" action="/convert_review" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" required />
+      <div class="muted">
+        姓 / 名 / 姓かな / 名かな をブラウザ上で確認・修正してから、最終CSVをダウンロードできます。
+      </div>
+      <p><button type="submit" class="secondary">人名かなを確認してからダウンロード</button></p>
     </form>
 
     <div class="verbox">
@@ -87,6 +96,127 @@ INDEX_HTML = """
 </html>
 """
 
+REVIEW_HTML = """
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <title>人名かな確認 - Eight → 宛名職人</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans JP", sans-serif; padding: 24px; }
+    .card { max-width: 1100px; margin: 0 auto; padding: 24px; border: 1px solid #ddd; border-radius: 12px; }
+    h1 { font-size: 20px; margin-top: 0; }
+    table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }
+    th { background: #f5f5f5; position: sticky; top: 0; z-index: 1; }
+    input[type="text"] { width: 100%; box-sizing: border-box; padding: 2px 4px; font-size: 12px; }
+    .muted { color: #666; font-size: 12px; margin-top: 4px; }
+    .btn-row { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+    button { padding: 8px 14px; border: 0; border-radius: 6px; background: #0b6; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
+    button.secondary { background: #999; }
+    .scroll-wrap { max-height: 520px; overflow: auto; margin-top: 8px; border: 1px solid #eee; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>人名かな確認</h1>
+    <div class="muted">
+      姓 / 名 / 姓かな / 名かな を必要に応じて修正してください。<br>
+      「この内容でCSVをダウンロード」を押すと、下記の表から宛名職人用CSVを生成します。
+    </div>
+
+    <form id="review-form" method="post" action="/download_reviewed">
+      <div class="scroll-wrap">
+        <table>
+          <thead>
+            <tr>
+              {% for h in headers %}
+              <th>{{ h }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+            <tr>
+              {% for cell in row %}
+                {% if loop.index0 == idx_last or loop.index0 == idx_first or loop.index0 == idx_last_k or loop.index0 == idx_first_k %}
+                  <td><input type="text" value="{{ cell|e }}" data-col="{{ loop.index0 }}"></td>
+                {% else %}
+                  <td data-col="{{ loop.index0 }}" data-value="{{ cell|e }}">{{ cell }}</td>
+                {% endif %}
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit">この内容でCSVをダウンロード</button>
+        <a href="/" class="muted" style="text-decoration:none;">← 最初の画面に戻る</a>
+      </div>
+
+      <input type="hidden" name="csv" id="csv-input">
+    </form>
+  </div>
+
+  {% raw %}
+  <script>
+  (function() {
+    function toCsvValue(v) {
+      if (v == null) return "";
+      v = String(v);
+      if (v.indexOf('"') !== -1 || v.indexOf(",") !== -1 || v.indexOf("\n") !== -1 || v.indexOf("\r") !== -1) {
+        v = '"' + v.replace(/"/g, '""') + '"';
+      }
+      return v;
+    }
+
+    var form = document.getElementById("review-form");
+    form.addEventListener("submit", function() {
+      var rows = [];
+      // ヘッダ行
+      var headers = [];
+      var ths = document.querySelectorAll("thead th");
+      for (var i = 0; i < ths.length; i++) {
+        headers.push(ths[i].textContent || "");
+      }
+      rows.push(headers);
+
+      // データ行
+      var trs = document.querySelectorAll("tbody tr");
+      for (var r = 0; r < trs.length; r++) {
+        var tds = trs[r].querySelectorAll("td");
+        var cols = [];
+        for (var c = 0; c < tds.length; c++) {
+          var td = tds[c];
+          var input = td.querySelector("input");
+          var val;
+          if (input) {
+            val = input.value;
+          } else if (td.getAttribute("data-value") !== null) {
+            val = td.getAttribute("data-value");
+          } else {
+            val = td.textContent || "";
+          }
+          cols.push(toCsvValue(val));
+        }
+        rows.push(cols);
+      }
+
+      var csvText = rows.map(function(row) {
+        return row.join(",");
+      }).join("\\n");
+
+      document.getElementById("csv-input").value = csvText;
+    });
+  })();
+  </script>
+  {% endraw %}
+</body>
+</html>
+"""
+
 app = Flask(__name__)
 
 def _module_versions():
@@ -101,7 +231,7 @@ def _module_versions():
             __version__ as TXN_VER,
             bldg_words_version,
             corp_terms_version,
-            company_overrides_version,  # 旧: legacy
+            company_overrides_version,  # legacy
         )
         BLDG_VER = bldg_words_version()
         CORP_TERMS_VER = corp_terms_version()
@@ -114,14 +244,12 @@ def _module_versions():
 
     try:
         from utils.kana import __version__ as KANA_VER, engine_name, engine_detail
+        KANA_NAME = engine_name()
+        KANA_DETAIL = engine_detail()
     except Exception:
         KANA_VER = None
-
-        def engine_name():
-            return None
-
-        def engine_detail():
-            return None
+        KANA_NAME = None
+        KANA_DETAIL = None
 
     try:
         comp_jp, comp_en = get_company_override_versions()
@@ -151,14 +279,13 @@ def _module_versions():
         surname_terms=p_surname,
         given_terms=p_given,
         area_codes=area_codes_ver,
-        # フリガナエンジン情報（対応していれば表示）
-        furigana_engine=(lambda: engine_name() if "engine_name" in globals() else None)(),
-        furigana_detail=(lambda: engine_detail() if "engine_detail" in globals() else None)(),
+        furigana_engine=KANA_NAME,
+        furigana_detail=KANA_DETAIL,
     )
 
 @app.route("/", methods=["GET", "HEAD"])
 def index():
-    # Render ヘルスチェックなどの HEAD / に 200 を返す
+    # Render のヘルスチェック対策：HEAD は中身なしで 200
     if request.method == "HEAD":
         return ("", 200)
     v = _module_versions()
@@ -209,6 +336,70 @@ def convert():
         last_modified=None,
     )
 
+# 新フロー：人名かな確認用
+@app.route("/convert_review", methods=["POST"])
+def convert_review():
+    f = request.files.get("file")
+    if not f or not getattr(f, "filename", ""):
+        abort(400, "CSV/TSVファイルが選択されていません。")
+
+    try:
+        text = f.stream.read().decode("utf-8")
+    except UnicodeDecodeError:
+        abort(400, "文字コードは UTF-8 にしてください。")
+
+    try:
+        converted = convert_eight_csv_text_to_atena_csv_text(text)
+    except Exception as e:
+        abort(500, f"変換に失敗しました: {e}")
+
+    buf = io.StringIO(converted)
+    reader = csv.reader(buf)
+    try:
+        headers = next(reader)
+    except StopIteration:
+        abort(400, "変換結果が空でした。")
+
+    rows = list(reader)
+
+    # 必須列のインデックスを確認
+    try:
+        idx_last = headers.index("姓")
+        idx_first = headers.index("名")
+        idx_last_k = headers.index("姓かな")
+        idx_first_k = headers.index("名かな")
+    except ValueError:
+        abort(500, "変換結果に必要な列（姓/名/姓かな/名かな）が存在しません。")
+
+    return render_template_string(
+        REVIEW_HTML,
+        headers=headers,
+        rows=rows,
+        idx_last=idx_last,
+        idx_first=idx_first,
+        idx_last_k=idx_last_k,
+        idx_first_k=idx_first_k,
+    )
+
+@app.route("/download_reviewed", methods=["POST"])
+def download_reviewed():
+    csv_text = request.form.get("csv", "")
+    if not csv_text:
+        abort(400, "CSVデータが送信されていません。")
+
+    buf = io.BytesIO(csv_text.encode("utf-8"))
+    filename = f"atena_reviewed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return send_file(
+        buf,
+        mimetype="text/csv; charset=utf-8",
+        as_attachment=True,
+        download_name=filename,
+        max_age=0,
+        etag=False,
+        conditional=False,
+        last_modified=None,
+    )
+
 @app.route("/healthz")
 def healthz():
     v = _module_versions()
@@ -242,7 +433,6 @@ def healthz():
     return jsonify(info), 200
 
 # ---- Selftest routes (robust) ----
-
 @app.route("/selftest/overrides", methods=["GET"])
 def selftest_overrides():
     try:
@@ -256,20 +446,13 @@ def selftest_overrides():
     }
     norm = {
         "jp": {
-            "nfkc": True,
-            "strip_spaces": True,
-            "collapse_spaces": True,
-            "unify_middle_dot": True,
-            "unify_slash_to": "／",
-            "fullwidth_ascii": True,
+            "nfkc": True, "strip_spaces": True, "collapse_spaces": True,
+            "unify_middle_dot": True, "unify_slash_to": "／", "fullwidth_ascii": True
         },
         "en": {
-            "nfkc": True,
-            "lower": True,
-            "strip_spaces": True,
-            "collapse_spaces": True,
-            "unify_slash_to": "/",
-        },
+            "nfkc": True, "lower": True, "strip_spaces": True,
+            "collapse_spaces": True, "unify_slash_to": "/"
+        }
     }
     payload = dict(
         ok=True,
@@ -281,6 +464,7 @@ def selftest_overrides():
         },
         normalize=norm,
         env=env_info,
+        # 固定値（目安）。実値が欲しければ services 側で返す実装に変更。
         sizes={"jp": 2, "en": 1, "tokens_jp": 14, "tokens_en": 40},
         tokens_present={"jp": True, "en": True},
     )
@@ -295,18 +479,13 @@ def selftest_company_kana():
         return jsonify(info), 200
     except Exception as e:
         tb = traceback.format_exc()
-        return jsonify(
-            {
-                "ok": False,
-                "error": str(e),
-                "traceback": tb,
-                "input": name,
-            }
-        ), 500
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "traceback": tb,
+            "input": name
+        }), 500
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", "8000")),
-        debug=False,
-    )
+    # Render 用: PORT が指定される前提だが、ローカル用にデフォルト 8000
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
