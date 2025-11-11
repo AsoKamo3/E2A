@@ -1,5 +1,5 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.9
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.10
 #
 # ベース方針
 # - v2.5.2 系ロジックを維持しつつ、以下を反映：
@@ -10,13 +10,15 @@
 #          - 1文字ずつの略称展開は短い塊（PARTIAL_ACRONYM_MAX_LEN）に限定
 #       3) 未カバー部分は to_katakana_guess による推測
 #   - 法人格剥がし：
-#       - 日本語：既存一覧＋可変セパレータ対応（一般社団法人 / 医療法人社団 等）
+#       - 日本語：一覧＋可変セパレータ対応（一般社団法人 / 医療法人社団 等）
 #       - 英語：Co., Ltd. / Inc. / Corporation / LLC / Company 等を正規表現で安全に除去
-#   - PRONEWS Co., LTD. / Japan Broadcasting Corporation 等の英語法人格が残らないよう調整
+#   - Japan Broadcasting Corporation / PRONEWS Co., LTD. 等の法人格を削除
 #   - 社会保険労務士法人アシスト21 / オンテックスe などの英数字位置ズレを抑制
 # - convert_eight_csv_text_to_atena_csv_text:
-#   - 住所 split は従来どおり会社側にのみ使用（自宅欄は空）※v2.5.8 の誤配置を修正
-# - 末尾のバージョン取得・debug_company_kana は v2.5.x 系仕様のまま
+#   - 住所 split は会社住所のみ（自宅欄は空）※従来仕様どおり
+# - v2.5.10:
+#   - 法人格除去で「短い語を先に消してしまう」問題を修正
+#     （_COMPANY_TYPES を長い順にソートしてから置換）
 
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.5.9"
+__version__ = "v2.5.10"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -76,7 +78,7 @@ def _split_department_half(s: str) -> tuple[str, str]:
         return s, ""
     n = len(tokens)
     k = math.ceil(n / 2.0)
-    left = "　".join(tokens[:k])     # 全角スペースで結合
+    left = "　".join(tokens[:k])
     right = "　".join(tokens[k:]) if k < n else ""
     return left, right
 
@@ -96,7 +98,6 @@ def _format_by_area(d: str) -> str:
             ac = code
             break
     if not ac:
-        # フォールバック：03/06 は 2-4-4、それ以外 3-3-4
         if len(d) == 10 and d.startswith(("03", "06")):
             return f"{d[0:2]}-{d[2:6]}-{d[6:10]}"
         if len(d) == 10:
@@ -105,7 +106,7 @@ def _format_by_area(d: str) -> str:
 
     local = d[len(ac):]
     if len(d) == 10:
-        if len(ac) == 2:   # 03 / 06
+        if len(ac) == 2:
             return f"{ac}-{local[0:4]}-{local[4:8]}"
         if len(ac) == 3:
             return f"{ac}-{local[0:3]}-{local[3:7]}"
@@ -123,7 +124,7 @@ def _normalize_one_phone(raw: str) -> str:
     if not d:
         return ""
 
-    # 携帯（11桁） or 10桁で 70/80/90 始まり → 先頭0補正
+    # 携帯 11桁 or 10桁(70/80/90始まり) → 先頭0補正
     if (len(d) == 11 and d.startswith(_MOBILE_PREFIXES)) or (len(d) == 10 and d.startswith(("70", "80", "90"))):
         if len(d) == 10:
             d = "0" + d
@@ -139,11 +140,11 @@ def _normalize_one_phone(raw: str) -> str:
     if d.startswith("050") and len(d) == 11:
         return f"{d[0:3]}-{d[3:7]}-{d[7:11]}"
 
-    # 固定：9桁は「0」欠落とみなす
+    # 固定：9桁は先頭0欠落とみなす
     if len(d) == 9:
         d = "0" + d
 
-    # 固定（10桁, 0始まり）
+    # 固定標準（10桁, 0始まり）
     if len(d) == 10 and d.startswith("0"):
         return _format_by_area(d)
 
@@ -181,9 +182,9 @@ _COMPANY_TYPES = [
     "有限会社","(有)","（有）","㈲",
     "合同会社","合資会社","合名会社","相互会社","清算株式会社",
     "ＮＰＯ法人","NPO法人","独立行政法人","特定非営利活動法人","地方独立行政法人","国立研究開発法人",
-    "医療法人","医療法人財団","医療法人社団",
-    "財団法人","一般財団法人","公益財団法人",
-    "社団法人","一般社団法人","公益社団法人","社会保険労務士法人",
+    "医療法人社団","医療法人財団","医療法人",
+    "一般財団法人","公益財団法人","財団法人",
+    "一般社団法人","公益社団法人","社団法人","社会保険労務士法人",
     "社会福祉法人","学校法人","公立大学法人","国立大学法人",
     "宗教法人","中間法人","特殊法人","特例民法法人",
     "特定目的会社","特定目的信託",
@@ -218,15 +219,15 @@ def _strip_company_type(name: str) -> str:
     if not base:
         return ""
 
-    # 1) 日本語/固定表記を素直に除去
-    for t in _COMPANY_TYPES:
+    # 1) 日本語/固定表記：『長い順』に除去して食い残しを防ぐ
+    for t in sorted(_COMPANY_TYPES, key=len, reverse=True):
         if t in base:
             base = base.replace(t, "")
 
     # 2) 英文法人格
     base = _EN_TYPE_RE.sub("", base)
 
-    # 3) 可変セパレータ入りパターン
+    # 3) 可変セパレータ入りパターン（一般／社団／法人 など）
     for segs in _KANJI_TYPE_PATTERNS:
         pat = _VAR_SEP_CLASS.join(map(re.escape, segs))
         base = re.sub(pat, "", base)
@@ -431,7 +432,6 @@ def _company_kana(company_name: str,
         while i < n:
             ch = stripped[i]
 
-            # 区切り文字
             if _is_sep(ch):
                 flush_gap()
                 i += 1
@@ -494,7 +494,7 @@ def _company_kana(company_name: str,
         if out_parts:
             return _clean_kana_symbols("".join(out_parts))
 
-    # 4) 全体を推測
+    # 4) 全体推測
     return _clean_kana_symbols(_to_kata(stripped))
 
 # ---- 人名かな生成 ----
@@ -557,7 +557,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         mobile      = g("携帯電話")
         url         = g("URL")
 
-        # 住所分割は「会社住所」としてのみ使用（従来仕様）
+        # 住所は会社住所としてのみ使用（自宅欄は空）
         a1, a2 = split_address(addr_raw)
         if (a2 or "").strip():
             company_addr1_raw, company_addr2_raw = a1, a2
@@ -578,7 +578,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         last_kana, first_kana, full_name_kana = _person_name_kana(last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS)
         full_name = f"{last}{first}"
 
-        # 可変カスタム列 → メモ/備考へ（従来どおり）
+        # カスタム列 → メモ/備考
         fn_clean = reader.fieldnames or []
         tail_headers = fn_clean[len(EIGHT_FIXED):]
         flags: List[str] = []
@@ -604,7 +604,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             "", "", "",
             # ニックネーム / 旧姓 / 宛先
             "", "", "",
-            # 自宅（従来どおり空）
+            # 自宅（空）
             "", "", "", "", "",
             "", "", "", "",
             # 会社
