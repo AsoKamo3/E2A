@@ -1,24 +1,26 @@
 # services/eight_to_atena.py
-# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.10
+# Eight CSV/TSV → 宛名職人CSV 変換本体 v2.5.11
 #
 # ベース方針
-# - v2.5.2 系ロジックを維持しつつ、以下を反映：
-#   - 会社名かな：
-#       1) JP/EN overrides のフル一致を最優先
-#       2) 有効なら JP/EN tokens による左→右の最長部分一致スキャン
-#          - 英数トークン境界は ASCII 英数字のみを基準に判定
-#          - 1文字ずつの略称展開は短い塊（PARTIAL_ACRONYM_MAX_LEN）に限定
-#       3) 未カバー部分は to_katakana_guess による推測
-#   - 法人格剥がし：
-#       - 日本語：一覧＋可変セパレータ対応（一般社団法人 / 医療法人社団 等）
-#       - 英語：Co., Ltd. / Inc. / Corporation / LLC / Company 等を正規表現で安全に除去
-#   - Japan Broadcasting Corporation / PRONEWS Co., LTD. 等の法人格を削除
-#   - 社会保険労務士法人アシスト21 / オンテックスe などの英数字位置ズレを抑制
-# - convert_eight_csv_text_to_atena_csv_text:
-#   - 住所 split は会社住所のみ（自宅欄は空）※従来仕様どおり
-# - v2.5.10:
-#   - 法人格除去で「短い語を先に消してしまう」問題を修正
-#     （_COMPANY_TYPES を長い順にソートしてから置換）
+# - 会社名かな：
+#     1) JP/EN overrides のフル一致を最優先
+#     2) 有効なら JP/EN tokens による左→右の最長部分一致スキャン
+#        - 英数トークン境界は ASCII 英数字のみで判定
+#        - 1文字ずつの略称展開は短い塊（PARTIAL_ACRONYM_MAX_LEN）に限定
+#     3) 未カバー部分は to_katakana_guess による推測
+# - 法人格剥がし：
+#     - 日本語：一覧＋可変セパレータ対応（一般社団法人 / 医療法人社団 等）
+#     - 英語：Co., Ltd. / Inc. / Corporation / LLC / Company 等を正規表現で除去
+# - Japan Broadcasting Corporation / PRONEWS Co., LTD. 等で法人格を削除
+# - 社会保険労務士法人アシスト21 / オンテックスe などの英数字位置ズレを抑制
+#
+# v2.5.10:
+#   - 法人格除去で短い語を先に消してしまう問題を修正（長い順に置換）
+# v2.5.11:
+#   - 会社名かな生成に to_zenkaku_wide 済み文字列ではなく元の company_raw を使用
+#     （英文法人格除去が常に有効になるよう統一）
+#   - _KANA_SYMBOLS_RE に () / （） を追加し、括弧のみ除去（中身は保持）
+#     （例：種と芽(個人事業主) → タネトメコジンジギョウヌシ）
 
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from utils.textnorm import to_zenkaku_wide, normalize_postcode
 from utils.jp_area_codes import AREA_CODES
 from utils.kana import to_katakana_guess as _to_kata
 
-__version__ = "v2.5.10"
+__version__ = "v2.5.11"
 
 # ===== 宛名職人ヘッダ（完全列） =====
 ATENA_HEADERS: List[str] = [
@@ -169,7 +171,8 @@ def _normalize_phone(*nums: str) -> str:
 
 # ========== かな生成：会社名・人名 ==========
 
-_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］\]&]+")
+# 記号類はフリガナから除去（括弧は「中身は残して括弧だけ消したい」ので含める）
+_KANA_SYMBOLS_RE = re.compile(r"[・／/［\[\]］()（）&]+")
 
 def _clean_kana_symbols(s: str) -> str:
     return _KANA_SYMBOLS_RE.sub("", s or "").strip()
@@ -177,21 +180,24 @@ def _clean_kana_symbols(s: str) -> str:
 # ---- 法人格（会社種別）除去 ----
 
 _COMPANY_TYPES = [
-    # 日本語（素直な形）
+    # 日本語（素直な形）※長いものを優先して消す（後でソート）
+    "医療法人社団","医療法人財団",
+    "一般財団法人","公益財団法人",
+    "一般社団法人","公益社団法人",
+    "ＮＰＯ法人","NPO法人",
+    "独立行政法人","特定非営利活動法人","地方独立行政法人","国立研究開発法人",
+    "社会保険労務士法人","社会福祉法人",
+    "公立大学法人","国立大学法人",
+    "特定目的会社","特定目的信託",
+    "有限責任事業組合","有限責任中間法人","投資事業有限責任組合",
+    "財団法人","社団法人",
+    "医療法人","学校法人","宗教法人","中間法人","特殊法人","特例民法法人",
     "株式会社","（株）","(株)","㈱",
     "有限会社","(有)","（有）","㈲",
     "合同会社","合資会社","合名会社","相互会社","清算株式会社",
-    "ＮＰＯ法人","NPO法人","独立行政法人","特定非営利活動法人","地方独立行政法人","国立研究開発法人",
-    "医療法人社団","医療法人財団","医療法人",
-    "一般財団法人","公益財団法人","財団法人",
-    "一般社団法人","公益社団法人","社団法人","社会保険労務士法人",
-    "社会福祉法人","学校法人","公立大学法人","国立大学法人",
-    "宗教法人","中間法人","特殊法人","特例民法法人",
-    "特定目的会社","特定目的信託",
-    "有限責任事業組合","有限責任中間法人","投資事業有限責任組合",
 ]
 
-# セパレータを挟んでも 1 塊とみなすパターン
+# セパレータを挟んでも1塊とみなすパターン
 _KANJI_TYPE_PATTERNS: List[Tuple[str, ...]] = [
     ("一般","社団","法人"),
     ("一般","財団","法人"),
@@ -209,7 +215,7 @@ _KANJI_TYPE_PATTERNS: List[Tuple[str, ...]] = [
 # 可変セパレータ
 _VAR_SEP_CLASS = r"[\s\u3000\-‐─―－()\[\]【】／/・,，.．]*"
 
-# 英文法人格（大小文字ゆれ含む）を削る
+# 英文法人格（ASCII）を削る
 _EN_TYPE_RE = re.compile(
     r'(?i)\b(?:co\.?,?\s*ltd\.?|co\.?|ltd\.?|inc\.?|incorporated|corp\.?|corporation|company|llc)\b\.?,?'
 )
@@ -219,15 +225,15 @@ def _strip_company_type(name: str) -> str:
     if not base:
         return ""
 
-    # 1) 日本語/固定表記：『長い順』に除去して食い残しを防ぐ
+    # 1) 日本語/固定表記：『長い順』で除去
     for t in sorted(_COMPANY_TYPES, key=len, reverse=True):
-        if t in base:
+        if t and t in base:
             base = base.replace(t, "")
 
-    # 2) 英文法人格
+    # 2) 英文法人格（ASCII対象）
     base = _EN_TYPE_RE.sub("", base)
 
-    # 3) 可変セパレータ入りパターン（一般／社団／法人 など）
+    # 3) 可変セパレータ入りパターン
     for segs in _KANJI_TYPE_PATTERNS:
         pat = _VAR_SEP_CLASS.join(map(re.escape, segs))
         base = re.sub(pat, "", base)
@@ -567,15 +573,20 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
         phone_join = _normalize_phone(tel_company, tel_dept, tel_direct, fax, mobile)
         dept1_raw, dept2_raw = _split_department_half(dept_raw)
 
+        # 表示用は全角寄せ
         company_addr1 = to_zenkaku_wide(company_addr1_raw)
         company_addr2 = to_zenkaku_wide(company_addr2_raw)
-        company = to_zenkaku_wide(company_raw)
+        company_disp  = to_zenkaku_wide(company_raw)
         dept1 = to_zenkaku_wide(dept1_raw)
         dept2 = to_zenkaku_wide(dept2_raw)
         title = to_zenkaku_wide(title_raw)
 
-        company_kana = _company_kana(company, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK) or ""
-        last_kana, first_kana, full_name_kana = _person_name_kana(last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS)
+        # かな用は「生の company_raw 」を使う（英文法人格除去を確実に効かせる）
+        company_kana = _company_kana(company_raw, JP_INDEX, EN_INDEX, JP_CFG, EN_CFG, JP_TOK, EN_TOK) or ""
+
+        last_kana, first_kana, full_name_kana = _person_name_kana(
+            last, first, FULL_OVER, SURNAME_TERMS, GIVEN_TERMS
+        )
         full_name = f"{last}{first}"
 
         # カスタム列 → メモ/備考
@@ -614,7 +625,7 @@ def convert_eight_csv_text_to_atena_csv_text(csv_text: str) -> str:
             # その他（空）
             "", "", "", "", "", "", "", "", "",
             # 会社名・部署・役職
-            company_kana, company,
+            company_kana, company_disp,
             dept1, dept2,
             title,
             # 連名
