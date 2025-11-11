@@ -1,12 +1,14 @@
 # app.py
-# Eight → 宛名職人 変換 v1.4.0
+# Eight → 宛名職人 変換 v1.4.1
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
 # - selftest/company_kana を堅牢化（例外を JSON で返す）
 # - v1.3.0: HEAD / に対応
-# - v1.4.0: 人名かな確認用フロー /convert_review + /download_reviewed を追加
-#            （変換ロジック本体は変更しない）
+# - v1.4.0: 人名かな確認フロー /convert_review + /download_reviewed 追加
+# - v1.4.1: 人名かな確認画面では「姓 / 名 / 姓かな / 名かな」だけ表示し、
+#            それ以外の列はクライアント側で隠し保持して再CSV化する仕様に変更
+#            （index() と変換ロジックは従来どおり維持）
 
 import io
 import os
@@ -25,7 +27,7 @@ from services.eight_to_atena import (
     debug_company_kana,
 )
 
-VERSION = "v1.4.0"
+VERSION = "v1.4.1"
 
 INDEX_HTML = """
 <!doctype html>
@@ -63,7 +65,8 @@ INDEX_HTML = """
     <form method="post" action="/convert_review" enctype="multipart/form-data">
       <input type="file" name="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" required />
       <div class="muted">
-        姓 / 名 / 姓かな / 名かな をブラウザ上で確認・修正してから、最終CSVをダウンロードできます。
+        姓 / 名 / 姓かな / 名かな だけを画面に表示して確認・修正し、
+        その内容を反映した最終CSVをダウンロードできます。
       </div>
       <p><button type="submit" class="secondary">人名かなを確認してからダウンロード</button></p>
     </form>
@@ -96,6 +99,9 @@ INDEX_HTML = """
 </html>
 """
 
+# 人名かなレビュー画面
+# 表示は「姓 / 名 / 姓かな / 名かな」の4列のみ。
+# ただし hidden に全列情報を JSON で保持し、送信時に元ヘッダ + 修正後かなで CSV を再構成する。
 REVIEW_HTML = """
 <!doctype html>
 <html lang="ja">
@@ -104,7 +110,7 @@ REVIEW_HTML = """
   <title>人名かな確認 - Eight → 宛名職人</title>
   <style>
     body { font-family: system-ui, -apple-system, "Helvetica Neue", Arial, "Noto Sans JP", sans-serif; padding: 24px; }
-    .card { max-width: 1100px; margin: 0 auto; padding: 24px; border: 1px solid #ddd; border-radius: 12px; }
+    .card { max-width: 720px; margin: 0 auto; padding: 24px; border: 1px solid #ddd; border-radius: 12px; }
     h1 { font-size: 20px; margin-top: 0; }
     table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 12px; }
     th, td { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }
@@ -115,36 +121,40 @@ REVIEW_HTML = """
     button { padding: 8px 14px; border: 0; border-radius: 6px; background: #0b6; color: #fff; font-weight: 600; cursor: pointer; font-size: 13px; }
     button.secondary { background: #999; }
     .scroll-wrap { max-height: 520px; overflow: auto; margin-top: 8px; border: 1px solid #eee; border-radius: 8px; }
+    a.back-link { text-decoration: none; color: #555; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>人名かな確認</h1>
     <div class="muted">
-      姓 / 名 / 姓かな / 名かな を必要に応じて修正してください。<br>
-      「この内容でCSVをダウンロード」を押すと、下記の表から宛名職人用CSVを生成します。
+      下記の「姓 / 名 / 姓かな / 名かな」だけを編集できます。<br>
+      その他の列は画面には表示しませんが、そのまま保持され、ダウンロードCSVに含まれます。
     </div>
 
     <form id="review-form" method="post" action="/download_reviewed">
+      <!-- 元のヘッダと全行データを hidden で保持 -->
+      <input type="hidden" id="orig-headers" value='{{ headers|tojson|e }}'>
+      <input type="hidden" id="orig-rows" value='{{ rows|tojson|e }}'>
+      <input type="hidden" name="csv" id="csv-input">
+
       <div class="scroll-wrap">
         <table>
           <thead>
             <tr>
-              {% for h in headers %}
-              <th>{{ h }}</th>
-              {% endfor %}
+              <th>姓</th>
+              <th>名</th>
+              <th>姓かな</th>
+              <th>名かな</th>
             </tr>
           </thead>
           <tbody>
             {% for row in rows %}
-            <tr>
-              {% for cell in row %}
-                {% if loop.index0 == idx_last or loop.index0 == idx_first or loop.index0 == idx_last_k or loop.index0 == idx_first_k %}
-                  <td><input type="text" value="{{ cell|e }}" data-col="{{ loop.index0 }}"></td>
-                {% else %}
-                  <td data-col="{{ loop.index0 }}" data-value="{{ cell|e }}">{{ cell }}</td>
-                {% endif %}
-              {% endfor %}
+            <tr data-index="{{ loop.index0 }}">
+              <td><input type="text" value="{{ row[idx_last]|e }}" data-col="{{ idx_last }}"></td>
+              <td><input type="text" value="{{ row[idx_first]|e }}" data-col="{{ idx_first }}"></td>
+              <td><input type="text" value="{{ row[idx_last_k]|e }}" data-col="{{ idx_last_k }}"></td>
+              <td><input type="text" value="{{ row[idx_first_k]|e }}" data-col="{{ idx_first_k }}"></td>
             </tr>
             {% endfor %}
           </tbody>
@@ -153,10 +163,8 @@ REVIEW_HTML = """
 
       <div class="btn-row">
         <button type="submit">この内容でCSVをダウンロード</button>
-        <a href="/" class="muted" style="text-decoration:none;">← 最初の画面に戻る</a>
+        <a href="/" class="back-link">← 最初の画面に戻る</a>
       </div>
-
-      <input type="hidden" name="csv" id="csv-input">
     </form>
   </div>
 
@@ -166,7 +174,8 @@ REVIEW_HTML = """
     function toCsvValue(v) {
       if (v == null) return "";
       v = String(v);
-      if (v.indexOf('"') !== -1 || v.indexOf(",") !== -1 || v.indexOf("\n") !== -1 || v.indexOf("\r") !== -1) {
+      if (v.indexOf('"') !== -1 || v.indexOf(",") !== -1 ||
+          v.indexOf("\n") !== -1 || v.indexOf("\r") !== -1) {
         v = '"' + v.replace(/"/g, '""') + '"';
       }
       return v;
@@ -174,40 +183,57 @@ REVIEW_HTML = """
 
     var form = document.getElementById("review-form");
     form.addEventListener("submit", function() {
-      var rows = [];
-      // ヘッダ行
-      var headers = [];
-      var ths = document.querySelectorAll("thead th");
-      for (var i = 0; i < ths.length; i++) {
-        headers.push(ths[i].textContent || "");
-      }
-      rows.push(headers);
+      var headersJson = document.getElementById("orig-headers").value || "[]";
+      var rowsJson = document.getElementById("orig-rows").value || "[]";
 
-      // データ行
+      var headers, rows;
+      try {
+        headers = JSON.parse(headersJson);
+        rows = JSON.parse(rowsJson);
+      } catch (e) {
+        alert("内部データの読み込みに失敗しました。ページをリロードしてください。");
+        // ここで submit を続行すると壊れたCSVになるので止める
+        event.preventDefault();
+        return false;
+      }
+
+      // rows は [ [col0, col1, ...], ... ]
+      // 画面上の input で指定されている col index の値だけ上書きする
       var trs = document.querySelectorAll("tbody tr");
-      for (var r = 0; r < trs.length; r++) {
-        var tds = trs[r].querySelectorAll("td");
-        var cols = [];
-        for (var c = 0; c < tds.length; c++) {
-          var td = tds[c];
-          var input = td.querySelector("input");
-          var val;
-          if (input) {
-            val = input.value;
-          } else if (td.getAttribute("data-value") !== null) {
-            val = td.getAttribute("data-value");
-          } else {
-            val = td.textContent || "";
-          }
-          cols.push(toCsvValue(val));
+      for (var i = 0; i < trs.length; i++) {
+        var tr = trs[i];
+        var rowIndex = parseInt(tr.getAttribute("data-index"), 10);
+        if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= rows.length) {
+          continue;
         }
-        rows.push(cols);
+        var row = rows[rowIndex];
+        var inputs = tr.querySelectorAll("input[data-col]");
+        for (var j = 0; j < inputs.length; j++) {
+          var input = inputs[j];
+          var col = parseInt(input.getAttribute("data-col"), 10);
+          if (!isNaN(col) && col >= 0 && col < row.length) {
+            row[col] = input.value;
+          }
+        }
       }
 
-      var csvText = rows.map(function(row) {
-        return row.join(",");
-      }).join("\\n");
+      // CSV 再構成：ヘッダ + 更新済み rows
+      var outLines = [];
+      outLines.push(headers.map(toCsvValue).join(","));
+      for (var r = 0; r < rows.length; r++) {
+        var row = rows[r];
+        // 念のため長さ揃え（足りない場合は空文字補完）
+        while (row.length < headers.length) {
+          row.push("");
+        }
+        var line = [];
+        for (var c = 0; c < headers.length; c++) {
+          line.push(toCsvValue(row[c]));
+        }
+        outLines.push(line.join(","));
+      }
 
+      var csvText = outLines.join("\\n");
       document.getElementById("csv-input").value = csvText;
     });
   })();
@@ -285,7 +311,7 @@ def _module_versions():
 
 @app.route("/", methods=["GET", "HEAD"])
 def index():
-    # Render のヘルスチェック対策：HEAD は中身なしで 200
+    # Render 側のヘルスチェック対策：HEAD は空レスポンスで 200
     if request.method == "HEAD":
         return ("", 200)
     v = _module_versions()
@@ -336,9 +362,13 @@ def convert():
         last_modified=None,
     )
 
-# 新フロー：人名かな確認用
 @app.route("/convert_review", methods=["POST"])
 def convert_review():
+    """
+    Eight CSV/TSV → 宛名職人CSV を一度生成し、
+    そのうち「姓 / 名 / 姓かな / 名かな」だけを編集可能な確認画面を表示。
+    それ以外の列は JSON として hidden で保持し、/download_reviewed で再CSV化する。
+    """
     f = request.files.get("file")
     if not f or not getattr(f, "filename", ""):
         abort(400, "CSV/TSVファイルが選択されていません。")
@@ -362,7 +392,7 @@ def convert_review():
 
     rows = list(reader)
 
-    # 必須列のインデックスを確認
+    # 必須列のインデックス
     try:
         idx_last = headers.index("姓")
         idx_first = headers.index("名")
@@ -383,6 +413,10 @@ def convert_review():
 
 @app.route("/download_reviewed", methods=["POST"])
 def download_reviewed():
+    """
+    REVIEW_HTML から送られてきた csv テキストをそのまま返す。
+    csv はクライアント側 JS で「元ヘッダ + 修正反映済み rows」から再構成済み。
+    """
     csv_text = request.form.get("csv", "")
     if not csv_text:
         abort(400, "CSVデータが送信されていません。")
@@ -432,7 +466,7 @@ def healthz():
     )
     return jsonify(info), 200
 
-# ---- Selftest routes (robust) ----
+# ---- Selftest routes (既存仕様維持) ----
 @app.route("/selftest/overrides", methods=["GET"])
 def selftest_overrides():
     try:
@@ -446,13 +480,20 @@ def selftest_overrides():
     }
     norm = {
         "jp": {
-            "nfkc": True, "strip_spaces": True, "collapse_spaces": True,
-            "unify_middle_dot": True, "unify_slash_to": "／", "fullwidth_ascii": True
+            "nfkc": True,
+            "strip_spaces": True,
+            "collapse_spaces": True,
+            "unify_middle_dot": True,
+            "unify_slash_to": "／",
+            "fullwidth_ascii": True,
         },
         "en": {
-            "nfkc": True, "lower": True, "strip_spaces": True,
-            "collapse_spaces": True, "unify_slash_to": "/"
-        }
+            "nfkc": True,
+            "lower": True,
+            "strip_spaces": True,
+            "collapse_spaces": True,
+            "unify_slash_to": "/",
+        },
     }
     payload = dict(
         ok=True,
@@ -464,7 +505,7 @@ def selftest_overrides():
         },
         normalize=norm,
         env=env_info,
-        # 固定値（目安）。実値が欲しければ services 側で返す実装に変更。
+        # ここは参考値（必要なら services 側で実数を返すようにする）
         sizes={"jp": 2, "en": 1, "tokens_jp": 14, "tokens_en": 40},
         tokens_present={"jp": True, "en": True},
     )
@@ -479,12 +520,14 @@ def selftest_company_kana():
         return jsonify(info), 200
     except Exception as e:
         tb = traceback.format_exc()
-        return jsonify({
-            "ok": False,
-            "error": str(e),
-            "traceback": tb,
-            "input": name
-        }), 500
+        return jsonify(
+            {
+                "ok": False,
+                "error": str(e),
+                "traceback": tb,
+                "input": name,
+            }
+        ), 500
 
 if __name__ == "__main__":
     # Render 用: PORT が指定される前提だが、ローカル用にデフォルト 8000
