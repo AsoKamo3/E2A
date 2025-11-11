@@ -1,5 +1,5 @@
 # app.py
-# Eight → 宛名職人 変換 v1.4.1
+# Eight → 宛名職人 変換 v1.4.2
 # - トップページと /healthz に app / converter / address / textnorm / kana / 各辞書のバージョンを表示
 # - 会社名かな辞書（JP/EN）・人名辞書（フル/姓/名）・エリア局番のバージョン表示
 # - CSV/TSV 自動判定入力 → 変換 → CSV ダウンロード
@@ -7,8 +7,9 @@
 # - v1.3.0: HEAD / に対応
 # - v1.4.0: 人名かな確認フロー /convert_review + /download_reviewed 追加
 # - v1.4.1: 人名かな確認画面では「姓 / 名 / 姓かな / 名かな」だけ表示し、
-#            それ以外の列はクライアント側で隠し保持して再CSV化する仕様に変更
-#            （index() と変換ロジックは従来どおり維持）
+#            その他の列は hidden で保持して再CSV化
+# - v1.4.2: /download_reviewed で CSV 未送信になる不具合修正
+#            （JS submit ハンドラで event を正しく受け取り、失敗時に preventDefault）
 
 import io
 import os
@@ -27,7 +28,7 @@ from services.eight_to_atena import (
     debug_company_kana,
 )
 
-VERSION = "v1.4.1"
+VERSION = "v1.4.2"
 
 INDEX_HTML = """
 <!doctype html>
@@ -99,9 +100,6 @@ INDEX_HTML = """
 </html>
 """
 
-# 人名かなレビュー画面
-# 表示は「姓 / 名 / 姓かな / 名かな」の4列のみ。
-# ただし hidden に全列情報を JSON で保持し、送信時に元ヘッダ + 修正後かなで CSV を再構成する。
 REVIEW_HTML = """
 <!doctype html>
 <html lang="ja">
@@ -182,7 +180,7 @@ REVIEW_HTML = """
     }
 
     var form = document.getElementById("review-form");
-    form.addEventListener("submit", function() {
+    form.addEventListener("submit", function(event) {
       var headersJson = document.getElementById("orig-headers").value || "[]";
       var rowsJson = document.getElementById("orig-rows").value || "[]";
 
@@ -192,20 +190,15 @@ REVIEW_HTML = """
         rows = JSON.parse(rowsJson);
       } catch (e) {
         alert("内部データの読み込みに失敗しました。ページをリロードしてください。");
-        // ここで submit を続行すると壊れたCSVになるので止める
         event.preventDefault();
-        return false;
+        return;
       }
 
-      // rows は [ [col0, col1, ...], ... ]
-      // 画面上の input で指定されている col index の値だけ上書きする
       var trs = document.querySelectorAll("tbody tr");
       for (var i = 0; i < trs.length; i++) {
         var tr = trs[i];
         var rowIndex = parseInt(tr.getAttribute("data-index"), 10);
-        if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= rows.length) {
-          continue;
-        }
+        if (isNaN(rowIndex) || rowIndex < 0 || rowIndex >= rows.length) continue;
         var row = rows[rowIndex];
         var inputs = tr.querySelectorAll("input[data-col]");
         for (var j = 0; j < inputs.length; j++) {
@@ -217,12 +210,10 @@ REVIEW_HTML = """
         }
       }
 
-      // CSV 再構成：ヘッダ + 更新済み rows
       var outLines = [];
       outLines.push(headers.map(toCsvValue).join(","));
       for (var r = 0; r < rows.length; r++) {
         var row = rows[r];
-        // 念のため長さ揃え（足りない場合は空文字補完）
         while (row.length < headers.length) {
           row.push("");
         }
@@ -233,8 +224,9 @@ REVIEW_HTML = """
         outLines.push(line.join(","));
       }
 
-      var csvText = outLines.join("\\n");
+      var csvText = outLines.join("\n");
       document.getElementById("csv-input").value = csvText;
+      // ここでは preventDefault しない。hidden に csv を入れた上で通常 submit。
     });
   })();
   </script>
@@ -311,7 +303,6 @@ def _module_versions():
 
 @app.route("/", methods=["GET", "HEAD"])
 def index():
-    # Render 側のヘルスチェック対策：HEAD は空レスポンスで 200
     if request.method == "HEAD":
         return ("", 200)
     v = _module_versions()
@@ -364,11 +355,6 @@ def convert():
 
 @app.route("/convert_review", methods=["POST"])
 def convert_review():
-    """
-    Eight CSV/TSV → 宛名職人CSV を一度生成し、
-    そのうち「姓 / 名 / 姓かな / 名かな」だけを編集可能な確認画面を表示。
-    それ以外の列は JSON として hidden で保持し、/download_reviewed で再CSV化する。
-    """
     f = request.files.get("file")
     if not f or not getattr(f, "filename", ""):
         abort(400, "CSV/TSVファイルが選択されていません。")
@@ -392,7 +378,6 @@ def convert_review():
 
     rows = list(reader)
 
-    # 必須列のインデックス
     try:
         idx_last = headers.index("姓")
         idx_first = headers.index("名")
@@ -413,10 +398,6 @@ def convert_review():
 
 @app.route("/download_reviewed", methods=["POST"])
 def download_reviewed():
-    """
-    REVIEW_HTML から送られてきた csv テキストをそのまま返す。
-    csv はクライアント側 JS で「元ヘッダ + 修正反映済み rows」から再構成済み。
-    """
     csv_text = request.form.get("csv", "")
     if not csv_text:
         abort(400, "CSVデータが送信されていません。")
@@ -466,7 +447,6 @@ def healthz():
     )
     return jsonify(info), 200
 
-# ---- Selftest routes (既存仕様維持) ----
 @app.route("/selftest/overrides", methods=["GET"])
 def selftest_overrides():
     try:
@@ -505,7 +485,6 @@ def selftest_overrides():
         },
         normalize=norm,
         env=env_info,
-        # ここは参考値（必要なら services 側で実数を返すようにする）
         sizes={"jp": 2, "en": 1, "tokens_jp": 14, "tokens_en": 40},
         tokens_present={"jp": True, "en": True},
     )
@@ -530,5 +509,4 @@ def selftest_company_kana():
         ), 500
 
 if __name__ == "__main__":
-    # Render 用: PORT が指定される前提だが、ローカル用にデフォルト 8000
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), debug=False)
